@@ -1,0 +1,3 @@
+# LuxeFinder collectors (scrapling + curl_cffi — scrapling 정적 Fetcher용)
+scrapling>=0.4.7
+curl_cffi>=0.7.0
