@@ -22,6 +22,7 @@ export const BAG_BRAND_PAIRS = [
   { ko: "에르메스", en: "HERMES" },
   { ko: "프라다", en: "PRADA" },
   { ko: "셀린느", en: "CELINE" },
+  { ko: "로에베", en: "Loewe" },
   { ko: "고야드", en: "GOYARD" },
   { ko: "펜디", en: "FENDI" },
   { ko: "토즈", en: "TODS" },

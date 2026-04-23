@@ -1,1 +1,11 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 data/

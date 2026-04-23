@@ -47,7 +47,7 @@ class FetcherConfig:
     locale: str = "ko-KR"
     load_dom: bool = True
     network_idle: bool = True
-    timeout: int = 90_000
+    timeout: int = 28_000
     wait: int = 800
     headless: bool = True
     """``m.`` / ``mobile.`` 호스트용 모바일 UA. 비우면 내장 기본."""

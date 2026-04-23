@@ -40,6 +40,7 @@ BAG_BRAND_DEFS: tuple[BagBrandDef, ...] = (
     {"ko": "에르메스", "en": "HERMES", "pattern": r"에르메스|HERM[EÈ]S|Hermes|에르메"},
     {"ko": "프라다", "en": "PRADA", "pattern": r"프라다|PRADA|Prada"},
     {"ko": "셀린느", "en": "CELINE", "pattern": r"셀린느|셀린|CELINE|Celine"},
+    {"ko": "로에베", "en": "Loewe", "pattern": r"로에베|LOEWE|Loewe"},
     {"ko": "고야드", "en": "GOYARD", "pattern": r"고야드|GOYARD|Goyard|고야투드"},
     {"ko": "펜디", "en": "FENDI", "pattern": r"펜디|FENDI|Fendi"},
     {"ko": "토즈", "en": "TODS", "pattern": r"토즈|TOD'?S|Tods"},
@@ -82,6 +83,7 @@ BAG_BRAND_PAIRS: tuple[tuple[str, str], ...] = tuple((d["ko"], d["en"]) for d in
 BRAND_MATCH_PATTERNS: tuple[tuple[str, str], ...] = tuple((d["ko"], d["pattern"]) for d in BAG_BRAND_DEFS)
 
 assert len(BAG_BRAND_CANONICAL) == len({b for b in BAG_BRAND_CANONICAL}), "duplicate canonical ko brand"
+assert len(BAG_BRAND_CANONICAL) == 54, f"expected 54 bag brands, got {len(BAG_BRAND_CANONICAL)}"
 
 
 def build_daangn_bag_queries() -> list[str]:
@@ -104,8 +106,8 @@ def build_daangn_bag_queries_scheduled(
     """
     당근 검색 쿼리 — 브랜드가 많을 때 **배치로 순환**해 한 주기 부담을 줄임.
 
-    - ``LUXEFINDER_SCRAPE_BRAND_BATCH`` 환경변수: 한 주기당 브랜드 수 (기본 전체).
-    - ``0`` 또는 비어 있음·브랜드 수 이상 → 매 주기 전 브랜드 검색.
+    - ``LUXEFINDER_SCRAPE_BRAND_BATCH`` 환경변수: 한 주기당 브랜드 수 (미설정 시 기본 3, 오프셋 순환).
+    - ``0`` 또는 브랜드 수 이상 → 매 주기 전 브랜드 검색.
     - ``advance=True``이면 호출마다 오프셋을 진행해 시간에 따라 전 브랜드를 훑음.
     """
     from os import environ
@@ -114,7 +116,10 @@ def build_daangn_bag_queries_scheduled(
     n = len(brands)
     raw = (environ.get("LUXEFINDER_SCRAPE_BRAND_BATCH") or "").strip()
     try:
-        batch = int(raw) if raw else (batch_brands if batch_brands is not None else 0)
+        # 환경변수 미설정 시 0이면 매 주기 전 브랜드×접미어를 전부 돌려 첫 응답이 수십 분~수시간 걸릴 수 있음.
+        # 기본 3브랜드(×가방/핸드백)만 돌리고 오프셋으로 순환 — 전체 스캔은 LUXEFINDER_SCRAPE_BRAND_BATCH=0
+        default_batch = 3
+        batch = int(raw) if raw else (batch_brands if batch_brands is not None else default_batch)
     except ValueError:
         batch = 0
     if batch <= 0 or batch >= n:

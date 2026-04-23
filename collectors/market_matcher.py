@@ -1,8 +1,8 @@
 """
 당근 메인 매물에 대해 번개장터·구구스·필웨이 최저 시세를 붙여 ``market_price`` 산출.
 
-- 각 플랫폼 스파이더는 ``lowest_acceptable_price`` 로 (판매중/거래완료 우선, 예약 제외 규칙은 spider 쪽) 후보를 좁힘.
-- 세 소스 중 **유효한 숫자만** 모아 최소값을 ``market_price_krw`` 로 설정.
+- ``scan_brands_pipeline(..., enrich_markets=True)`` 일 때만 매 당근 행마다 ``enrich`` 호출(느림).
+- 기본 ``enrich_markets=True`` (1:1 시세 비교). 끄려면 ``LUXEFINDER_ENRICH_MARKETS=0``.
 """
 
 from __future__ import annotations
@@ -33,8 +33,29 @@ class MarketMatcher:
 
     @staticmethod
     def build_search_query(daangn_item: RawListing) -> str:
-        """동일 모델 추정용 쿼리. 운영에서는 GPT 정규화 모델명으로 교체."""
-        return (daangn_item.model_name or "").strip()[:120]
+        """
+        동일 모델 추정용 쿼리.
+
+        - 브랜드 키워드가 확인된 매물에만 시세를 붙이는 파이프라인 특성상,
+          쿼리에도 브랜드를 포함시키는 것이 오탐/미탐을 크게 줄인다.
+        """
+        title = (daangn_item.model_name or "").strip()
+        desc = (daangn_item.description_text or "").strip()
+        blob = f"{title} {desc}".strip()
+        brand: str | None = None
+        try:
+            from api.brand_constants import text_matches_catalog_brand
+
+            brand = text_matches_catalog_brand(blob)
+        except Exception:
+            brand = None
+
+        q = title
+        if brand:
+            # title 에 브랜드가 없으면 앞에 붙여 검색 정확도 개선
+            if brand.lower() not in q.lower():
+                q = f"{brand} {q}".strip()
+        return q[:120]
 
     @staticmethod
     def _listing_url_or_none(item: RawListing | None) -> str | None:
@@ -55,13 +76,19 @@ class MarketMatcher:
             return None, None
 
     def enrich(self, daangn_item: RawListing) -> DaangnEnrichedListing:
+        from concurrent.futures import ThreadPoolExecutor
+
         q = self.build_search_query(daangn_item)
-        print(f"[match] enrich query={q!r} (source=daangn)")
-        bp, rb = self._safe_lowest(self.bunjang, q)
+        print(f"[match] enrich query={q!r} (source=daangn) parallel=3")
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            f_bj = ex.submit(self._safe_lowest, self.bunjang, q)
+            f_gg = ex.submit(self._safe_lowest, self.gugus, q)
+            f_fw = ex.submit(self._safe_lowest, self.feelway, q)
+            bp, rb = f_bj.result()
+            gp, rg = f_gg.result()
+            fp, rf = f_fw.result()
         print(f"[match] [bunjang] lowest={bp} url={(rb.listing_url if rb else None)}")
-        gp, rg = self._safe_lowest(self.gugus, q)
         print(f"[match] [gugus] lowest={gp} url={(rg.listing_url if rg else None)}")
-        fp, rf = self._safe_lowest(self.feelway, q)
         print(f"[match] [feelway] lowest={fp} url={(rf.listing_url if rf else None)}")
         platform = {"bunjang": bp, "gugus": gp, "feelway": fp}
         urls = {
@@ -93,19 +120,28 @@ class MarketMatcher:
         queries: list[str],
         *,
         per_query_limit: int = 12,
+        enrich_markets: bool = True,
     ) -> list[DaangnEnrichedListing]:
-        """샤넬/루이비통/구찌 등 키워드별 당근 → 시세 병합 일괄 실행."""
+        """키워드별 당근 검색 후, ``enrich_markets=True`` 일 때만 번개/구구스/필웨이 시세 조회(느림)."""
         enriched: list[DaangnEnrichedListing] = []
         for q in queries:
             try:
                 items = self.daangn.search(q, limit=per_query_limit)
-                print(f"[match] [daangn] query={q!r} items={len(items)}")
+                print(f"[match] [daangn] query={q!r} items={len(items)} enrich_markets={enrich_markets}")
             except Exception:
                 traceback.print_exc()
                 continue
             for item in items:
                 try:
-                    enriched.append(self.enrich(item))
+                    if enrich_markets:
+                        enriched.append(self.enrich(item))
+                    else:
+                        enriched.append(
+                            DaangnEnrichedListing(
+                                daangn=item,
+                                market_price_krw=None,
+                            )
+                        )
                 except Exception:
                     traceback.print_exc()
                     continue

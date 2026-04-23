@@ -48,6 +48,24 @@ const Index = () => {
     let closeSse = () => {};
     setListingsLoading(true);
     setListingsFeedError(null);
+    /** 첫 GET이 막혀도 UI가 무한 로딩에 걸리지 않도록 상한(실시간은 SSE가 이어 받음). */
+    const loadingCap = window.setTimeout(() => {
+      if (!cancelled) setListingsLoading(false);
+    }, 2000);
+    closeSse = connectListingsSSE({
+      onSnapshot: setListings,
+      onListingReady: (listing) => {
+        setListings((prev) => {
+          const i = prev.findIndex((x) => x.id === listing.id);
+          if (i >= 0) {
+            const next = [...prev];
+            next[i] = listing;
+            return next;
+          }
+          return [listing, ...prev];
+        });
+      },
+    });
     void (async () => {
       try {
         const data = await fetchListings();
@@ -56,7 +74,6 @@ const Index = () => {
         setListingsFeedError(null);
         setUsingOfflinePreview(false);
         setListingsApiOk(true);
-        closeSse = connectListingsSSE(setListings);
       } catch (e) {
         if (cancelled) return;
         setListings(getOfflinePreviewListings());
@@ -66,11 +83,13 @@ const Index = () => {
         setUsingOfflinePreview(true);
         setListingsApiOk(false);
       } finally {
+        window.clearTimeout(loadingCap);
         if (!cancelled) setListingsLoading(false);
       }
     })();
     return () => {
       cancelled = true;
+      window.clearTimeout(loadingCap);
       closeSse();
     };
   }, [feedRetryKey]);

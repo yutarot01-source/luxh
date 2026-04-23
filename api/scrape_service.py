@@ -7,6 +7,7 @@ import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -138,6 +139,7 @@ def run_scrape_cycle(
     use_image_proxy: bool,
     stealth: bool,
     queries: list[str] | None = None,
+    on_partial: Callable[[list[dict[str, Any]]], None] | None = None,
 ) -> list[dict[str, Any]]:
     """
     당근 검색 → MarketMatcher 시세 병합 → Listing dict 리스트.
@@ -148,7 +150,12 @@ def run_scrape_cycle(
     검색 쿼리는 ``api.brand_constants.build_daangn_bag_queries_scheduled`` 로 생성합니다.
     ``LUXEFINDER_SCRAPE_BRAND_BATCH`` 에 양의 정수를 주면 한 주기에 해당 개수의 브랜드만
     순환 검색해 부하를 나누고, 호출마다 오프셋이 진행되어 시간이 지나면 전 브랜드를 훑습니다.
-    (미설정·0·브랜드 수 이상이면 매 주기 전 브랜드 × 가방/핸드백 접미 전부 검색.)
+    (미설정 시 기본 3브랜드. ``0`` 또는 브랜드 수 이상이면 매 주기 전 브랜드 × 접미 전부 검색.)
+
+    ``on_partial``: 검색 쿼리 처리 중 누적 ``out`` 을 넘김(시작 직후 UI 갱신용).
+
+    당근 매물마다 타 플랫폼 시세 ``enrich`` 는 **기본 활성**(1:1 매칭 본질).
+    끄려면 ``LUXEFINDER_ENRICH_MARKETS=0``.
     """
     # 운영/데모에서 환경변수로 수집을 끄는 경우가 있는데,
     # "백엔드가 전혀 작동하지 않는다"로 보이지 않도록 로그를 남긴다.
@@ -171,17 +178,39 @@ def run_scrape_cycle(
 
         from .listing_builder import enriched_to_listing_dict, raw_market_to_listing_dict
 
+        from concurrent.futures import ThreadPoolExecutor
+
+        enrich_markets = _env_bool("LUXEFINDER_ENRICH_MARKETS", default=True)
         mm = MarketMatcher(stealth=stealth)
         bj = BunjangSpider(stealth=stealth)
         fw = FeelwaySpider(stealth=stealth)
         gg = GugusSpider(stealth=stealth)
         out: list[dict[str, Any]] = []
+        side_limit = int(os.environ.get("LUXEFINDER_SIDE_MARKET_LIMIT", "6") or "6")
+        side_limit = max(1, min(side_limit, 20))
+        daangn_limit = int(os.environ.get("LUXEFINDER_DAANGN_PER_QUERY", "10") or "10")
+        daangn_limit = max(1, min(daangn_limit, 40))
+
+        def _append_side(platform: str, rows: list[Any]) -> None:
+            for r in rows:
+                out.append(
+                    raw_market_to_listing_dict(
+                        r,
+                        platform=platform,
+                        use_image_proxy=use_image_proxy,
+                    )
+                )
+
         for q in queries:
-            # 1) 당근(메인) + (번개/구구스/필웨이) 시세 매칭
+            # 1) 당근(메인) — 시세 enrich 는 기본 끔(속도). on_partial 로 즉시 UI 반영.
             try:
                 print(f"[scrape] [당근마켓] {q!r} 수집 중...")
                 before = len(out)
-                for enriched in mm.scan_brands_pipeline([q], per_query_limit=3):
+                for enriched in mm.scan_brands_pipeline(
+                    [q],
+                    per_query_limit=daangn_limit,
+                    enrich_markets=enrich_markets,
+                ):
                     blob = f"{enriched.daangn.model_name} {enriched.daangn.description_text}"
                     if text_matches_catalog_brand(blob) is None:
                         continue
@@ -197,53 +226,62 @@ def run_scrape_cycle(
             except Exception:
                 traceback.print_exc()
 
-            # 2) 번개장터(독립 피드)
-            try:
-                print(f"[scrape] [번개장터] {q!r} 수집 중...")
-                rows = bj.search(q, limit=3)
-                for r in rows:
-                    out.append(
-                        raw_market_to_listing_dict(
-                            r,
-                            platform="bunjang",
-                            use_image_proxy=use_image_proxy,
-                        )
-                    )
-                print(f"[scrape] [번개장터] {q!r} 완료 (성공 {len(rows)}건)")
-            except Exception:
-                traceback.print_exc()
+            if on_partial is not None and out:
+                try:
+                    on_partial(list(out))
+                except Exception:
+                    traceback.print_exc()
 
-            # 3) 필웨이(독립 피드)
-            try:
-                print(f"[scrape] [필웨이] {q!r} 수집 중...")
-                rows = fw.search(q, limit=3)
-                for r in rows:
-                    out.append(
-                        raw_market_to_listing_dict(
-                            r,
-                            platform="feelway",
-                            use_image_proxy=use_image_proxy,
-                        )
-                    )
-                print(f"[scrape] [필웨이] {q!r} 완료 (성공 {len(rows)}건)")
-            except Exception:
-                traceback.print_exc()
+            # 2–4) 번개·필웨이·구구스: 정적 수집(stealth off)이면 스레드 병렬.
 
-            # 4) 구구스(독립 피드; 실패해도 루프 지속)
-            try:
-                print(f"[scrape] [구구스] {q!r} 수집 중...")
-                rows = gg.search(q, limit=3)
-                for r in rows:
-                    out.append(
-                        raw_market_to_listing_dict(
-                            r,
-                            platform="gugus",
-                            use_image_proxy=use_image_proxy,
-                        )
-                    )
-                print(f"[scrape] [구구스] {q!r} 완료 (성공 {len(rows)}건)")
-            except Exception:
-                traceback.print_exc()
+            if not stealth:
+                print(f"[scrape] [번개·필웨이·구구스] {q!r} 병렬 수집…")
+                try:
+                    with ThreadPoolExecutor(max_workers=3) as pool:
+                        f_bj = pool.submit(bj.search, q, limit=side_limit)
+                        f_fw = pool.submit(fw.search, q, limit=side_limit)
+                        f_gg = pool.submit(gg.search, q, limit=side_limit)
+                    for label, fut, plat in (
+                        ("번개장터", f_bj, "bunjang"),
+                        ("필웨이", f_fw, "feelway"),
+                        ("구구스", f_gg, "gugus"),
+                    ):
+                        try:
+                            rows = fut.result(timeout=40)
+                            _append_side(plat, rows)
+                            print(f"[scrape] [{label}] {q!r} 완료 (성공 {len(rows)}건)")
+                        except Exception:
+                            traceback.print_exc()
+                except Exception:
+                    traceback.print_exc()
+            else:
+                try:
+                    print(f"[scrape] [번개장터] {q!r} 수집 중...")
+                    rows = bj.search(q, limit=side_limit)
+                    _append_side("bunjang", rows)
+                    print(f"[scrape] [번개장터] {q!r} 완료 (성공 {len(rows)}건)")
+                except Exception:
+                    traceback.print_exc()
+                try:
+                    print(f"[scrape] [필웨이] {q!r} 수집 중...")
+                    rows = fw.search(q, limit=side_limit)
+                    _append_side("feelway", rows)
+                    print(f"[scrape] [필웨이] {q!r} 완료 (성공 {len(rows)}건)")
+                except Exception:
+                    traceback.print_exc()
+                try:
+                    print(f"[scrape] [구구스] {q!r} 수집 중...")
+                    rows = gg.search(q, limit=side_limit)
+                    _append_side("gugus", rows)
+                    print(f"[scrape] [구구스] {q!r} 완료 (성공 {len(rows)}건)")
+                except Exception:
+                    traceback.print_exc()
+
+            if on_partial is not None and out:
+                try:
+                    on_partial(list(out))
+                except Exception:
+                    traceback.print_exc()
 
         if not out:
             return _seed_listings()
@@ -263,25 +301,15 @@ def start_background_scraper(
     stealth: bool,
     settings_store: SettingsStore | None = None,
 ) -> None:
-    import threading
-    import time
+    """레거시 이름 — 내부적으로 증분 실시간 루프로 위임."""
+    from api.realtime_scrape import start_incremental_background_loops
 
-    def _loop() -> None:
-        while True:
-            time.sleep(interval_sec)
-            try:
-                before_ids = {x["id"] for x in state.snapshot()}
-                rows = run_scrape_cycle(
-                    image_proxy_prefix=image_proxy_prefix,
-                    use_image_proxy=use_image_proxy,
-                    stealth=stealth,
-                )
-                fresh = [x for x in rows if x["id"] not in before_ids]
-                full = state.prepend(rows)
-                _notify_new_listings(fresh, settings_store, public_api_base=image_proxy_prefix)
-                hub.publish_from_thread({"type": "snapshot", "listings": full})
-            except Exception:
-                traceback.print_exc()
-
-    t = threading.Thread(target=_loop, name="scraper", daemon=True)
-    t.start()
+    start_incremental_background_loops(
+        interval_sec=interval_sec,
+        state=state,
+        hub=hub,
+        image_proxy_prefix=image_proxy_prefix,
+        use_image_proxy=use_image_proxy,
+        stealth=stealth,
+        settings_store=settings_store,
+    )

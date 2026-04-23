@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -29,7 +30,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from api.listing_builder import enriched_to_listing_dict
-from api.scrape_service import run_scrape_cycle, start_background_scraper, _notify_new_listings
+from api.realtime_scrape import run_incremental_cycle, start_incremental_background_loops
 from api.settings_routes import SettingsPayload, TelegramTestPayload
 from api.settings_store import DEFAULT_CATEGORY_IDS, DashboardSettings, SettingsStore
 from api.state_store import ListingState, SSEHub
@@ -92,45 +93,50 @@ async def _startup() -> None:
     hub.set_loop(asyncio.get_running_loop())
     # 동적 사이트(당근/번개/필웨이/구구스)는 브라우저 렌더링이 필요한 경우가 많아 기본 ON.
     # (patchright 미설치 시 BaseCollector가 자동으로 정적 fetch로 폴백)
-    stealth = _env_bool("LUXEFINDER_SCRAPE_STEALTH", default=True)
+    stealth = _env_bool("LUXEFINDER_SCRAPE_STEALTH", default=False)
     use_proxy = _env_bool("LUXEFINDER_IMAGE_PROXY", default=True)
     prefix = _public_base()
     if not _env_bool("LUXEFINDER_SCRAPE", default=True):
         print("[startup] LUXEFINDER_SCRAPE=0 → 수집 비활성화(시드 데이터만 반환)")
     print(f"[startup] stealth={stealth} image_proxy={use_proxy} public_base={prefix}")
 
-    # IMPORTANT: startup에서 실수집을 기다리면(브라우저/네트워크) API가 "멈춘 것"처럼 보입니다.
-    # 즉시 시드로 state를 채우고, 실수집은 백그라운드 스레드로 돌려 /api/listings가 바로 응답하도록 합니다.
-    # 데모 행(메인 URL 등) 주입은 실서비스 동작/검증을 방해하므로 비활성화
-    state.replace_all([])
+    # 1:1 실시간: 당근 1건 → 3사 병렬 시세(≤5s) → ``listing_ready`` SSE + 즉시 텔레그램.
+    if not _env_bool("LUXEFINDER_SCRAPE", default=True):
+        from api.scrape_service import _seed_listings
 
-    async def _initial_scrape_async() -> None:
-        try:
-            rows = await asyncio.to_thread(
-                run_scrape_cycle,
-                image_proxy_prefix=prefix,
-                use_image_proxy=use_proxy,
-                stealth=stealth,
-            )
-            # 서버 시작 직후에도 '신규 매물'로 텔레그램 알림 트리거
-            _notify_new_listings(rows, settings_store, public_api_base=prefix)
-            state.replace_all(rows[: state.max_items])
-            await hub.publish({"type": "snapshot", "listings": state.snapshot()})
-            print(f"[startup] initial scrape done (rows={len(rows)})")
-        except Exception:
-            traceback.print_exc()
+        state.replace_all(_seed_listings())
+        await hub.publish({"type": "snapshot", "listings": state.snapshot()})
+    else:
+        state.replace_all([])
 
-    asyncio.create_task(_initial_scrape_async())
-    interval = float(os.environ.get("LUXEFINDER_SCRAPE_INTERVAL", "90"))
-    start_background_scraper(
-        interval_sec=interval,
-        state=state,
-        hub=hub,
-        image_proxy_prefix=prefix,
-        use_image_proxy=use_proxy,
-        stealth=stealth,
-        settings_store=settings_store,
-    )
+        async def _initial_incremental() -> None:
+            try:
+                await asyncio.to_thread(
+                    run_incremental_cycle,
+                    image_proxy_prefix=prefix,
+                    use_image_proxy=use_proxy,
+                    stealth=stealth,
+                    state=state,
+                    hub=hub,
+                    settings_store=settings_store,
+                    public_api_base=prefix,
+                )
+                print("[startup] incremental scrape cycle dispatched (per-listing workers)")
+            except Exception:
+                traceback.print_exc()
+
+        asyncio.create_task(_initial_incremental())
+        interval = float(os.environ.get("LUXEFINDER_SCRAPE_INTERVAL", "45"))
+        start_incremental_background_loops(
+            interval_sec=interval,
+            state=state,
+            hub=hub,
+            image_proxy_prefix=prefix,
+            use_image_proxy=use_proxy,
+            stealth=stealth,
+            settings_store=settings_store,
+            public_api_base=prefix,
+        )
 
 
 app.add_middleware(
@@ -319,20 +325,22 @@ async def test_telegram() -> dict[str, object]:
 @app.get("/api/debug/run-once")
 async def debug_run_once() -> dict[str, object]:
     """즉시 1회 수집 실행 후 state/SSE 갱신."""
-    stealth = _env_bool("LUXEFINDER_SCRAPE_STEALTH", default=True)
+    stealth = _env_bool("LUXEFINDER_SCRAPE_STEALTH", default=False)
     use_proxy = _env_bool("LUXEFINDER_IMAGE_PROXY", default=True)
     prefix = _public_base()
     try:
-        rows = await asyncio.to_thread(
-            run_scrape_cycle,
+        await asyncio.to_thread(
+            run_incremental_cycle,
             image_proxy_prefix=prefix,
             use_image_proxy=use_proxy,
             stealth=stealth,
-            queries=["샤넬"],
+            state=state,
+            hub=hub,
+            settings_store=settings_store,
+            public_api_base=prefix,
+            queries=["샤넬 가방", "루이비통 가방"],
         )
-        state.replace_all(rows[: state.max_items])
-        await hub.publish({"type": "snapshot", "listings": state.snapshot()})
-        return {"ok": True, "count": len(rows)}
+        return {"ok": True, "queued": True}
     except Exception as e:
         traceback.print_exc()
         return {"ok": False, "error": str(e)}

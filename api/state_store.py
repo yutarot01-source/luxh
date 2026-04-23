@@ -31,6 +31,39 @@ class ListingState:
             self._items = (fresh + self._items)[: self._max]
             return list(self._items)
 
+    def add_listing_front(self, row: dict[str, Any]) -> None:
+        """동일 ``id`` 가 있으면 제거 후 맨 앞에 삽입(실시간 당근 행)."""
+        lid = row.get("id")
+        if not lid:
+            return
+        with self._lock:
+            self._items = [x for x in self._items if x.get("id") != lid]
+            self._items.insert(0, row)
+            self._items = self._items[: self._max]
+
+    def merge_listing(self, listing_id: str, patch: dict[str, Any]) -> None:
+        """``id`` 행에 필드 병합. ``platform_prices``·``platformLinks`` 는 얕은 병합."""
+        if not listing_id or not patch:
+            return
+        with self._lock:
+            for i, row in enumerate(self._items):
+                if row.get("id") != listing_id:
+                    continue
+                merged = dict(row)
+                for k, v in patch.items():
+                    if k == "platform_prices" and isinstance(v, dict):
+                        base = dict(row.get("platform_prices") or {})
+                        base.update(v)
+                        merged["platform_prices"] = base
+                    elif k == "platformLinks" and isinstance(v, dict):
+                        base = dict(row.get("platformLinks") or {})
+                        base.update(v)
+                        merged["platformLinks"] = base
+                    else:
+                        merged[k] = v
+                self._items[i] = merged
+                return
+
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
             return list(self._items)

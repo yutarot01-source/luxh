@@ -14,6 +14,7 @@ import type {
   Listing,
   ListingSourcePlatform,
   PlatformDetailLinks,
+  PlatformId,
   PlatformPrices,
   Settings,
 } from "./types";
@@ -321,7 +322,7 @@ function normalizePlatformPrices(raw: unknown): PlatformPrices {
   };
 }
 
-function mapApiRowToListing(row: unknown): Listing {
+export function mapApiRowToListing(row: unknown): Listing {
   const o = row as Record<string, unknown>;
   const rawAi = o.ai_status as Partial<AiStatus> | undefined;
   const ai: AiStatus = {
@@ -393,7 +394,19 @@ function mapApiRowToListing(row: unknown): Listing {
 }
 
 export async function fetchListings(): Promise<Listing[]> {
-  const r = await fetch(apiPath("/api/listings"));
+  const ac = new AbortController();
+  const t = window.setTimeout(() => ac.abort(), 12_000);
+  let r: Response;
+  try {
+    r = await fetch(apiPath("/api/listings"), { signal: ac.signal });
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
+      throw new Error("GET /api/listings: 시간 초과(API가 응답하지 않음). uvicorn(8000)이 켜져 있는지 확인하세요.");
+    }
+    throw e;
+  } finally {
+    window.clearTimeout(t);
+  }
   if (!r.ok) {
     throw new Error(`GET /api/listings failed: ${r.status}`);
   }
@@ -402,11 +415,77 @@ export async function fetchListings(): Promise<Listing[]> {
   return rows.map(mapApiRowToListing);
 }
 
+/** SSE ``new_listing`` — 당근만 확정된 최소 필드. */
+export type NewListingSse = {
+  id: string;
+  title: string;
+  price: number;
+  image: string;
+  brand: string;
+  model_name: string;
+};
+
+export type MarketUpdateSse = {
+  id: string;
+  platform_name: string;
+  price: number | null;
+};
+
+export type MarketFinalSse = {
+  id: string;
+  market_price: number | null;
+  profit_rate: number;
+  reference_platform?: PlatformId | null;
+};
+
+export type ListingsFeedHandlers = {
+  onSnapshot: (listings: Listing[]) => void;
+  /** 4사 비교·수익률까지 끝난 완성 행(백엔드 ``listing_ready``). */
+  onListingReady?: (listing: Listing) => void;
+  onNewListing?: (payload: NewListingSse) => void;
+  onMarketUpdate?: (payload: MarketUpdateSse) => void;
+  onMarketFinal?: (payload: MarketFinalSse) => void;
+};
+
+/** ``new_listing`` SSE → 카드용 ``Listing`` 스켈레톤. */
+export function listingFromNewListingSse(p: NewListingSse): Listing {
+  const raw = String(p.brand ?? "").trim();
+  const brand: Brand = BRANDS.includes(raw as Brand) ? (raw as Brand) : "기타";
+  return {
+    id: p.id,
+    brand,
+    rawTitle: p.title,
+    normalizedModel: p.model_name || p.title,
+    price: p.price,
+    marketPrice: p.price,
+    arbitrageRate: 0,
+    status_summary: "시세 수집 중",
+    is_suspicious: false,
+    expected_profit: 0,
+    location: "—",
+    postedMinutesAgo: 0,
+    imageUrl: resolveApiMediaUrl(p.image || ""),
+    sourceUrl: "",
+    link: undefined,
+    platform: "daangn",
+    platformLinks: {},
+    status: "완료",
+    ai_status: { warranty: false, receipt: false, condition_grade: "A" },
+    platform_prices: {
+      gogoose_lowest_krw: 0,
+      feelway_lowest_krw: 0,
+      bunjang_lowest_krw: 0,
+    },
+    reference_platform: null,
+    reference_price_krw: null,
+  };
+}
+
 /**
- * ``GET /api/listings/stream`` SSE — 스냅샷마다 ``onListings``로 전체 목록 교체.
+ * ``GET /api/listings/stream`` SSE — ``snapshot`` + ``listing_ready``(완성 1건) + 레거시 증분 이벤트.
  * 연결 끊김 시 지수 백오프로 재연결한다.
  */
-export function connectListingsSSE(onListings: (listings: Listing[]) => void): () => void {
+export function connectListingsSSE(handlers: ListingsFeedHandlers): () => void {
   let closed = false;
   let es: EventSource | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -414,9 +493,45 @@ export function connectListingsSSE(onListings: (listings: Listing[]) => void): (
 
   const applyMessage = (ev: MessageEvent<string>) => {
     try {
-      const msg = JSON.parse(ev.data) as { type?: string; listings?: unknown[] };
-      if (msg.type === "snapshot" && Array.isArray(msg.listings)) {
-        onListings(msg.listings.map(mapApiRowToListing));
+      const msg = JSON.parse(ev.data) as Record<string, unknown>;
+      const t = msg.type;
+      if (t === "snapshot" && Array.isArray(msg.listings)) {
+        handlers.onSnapshot((msg.listings as unknown[]).map(mapApiRowToListing));
+        return;
+      }
+      if (t === "listing_ready" && msg.listing != null) {
+        handlers.onListingReady?.(mapApiRowToListing(msg.listing));
+        return;
+      }
+      if (t === "new_listing" && typeof msg.id === "string") {
+        handlers.onNewListing?.({
+          id: msg.id,
+          title: String(msg.title ?? ""),
+          price: Number(msg.price ?? 0),
+          image: String(msg.image ?? ""),
+          brand: String(msg.brand ?? ""),
+          model_name: String(msg.model_name ?? ""),
+        });
+        return;
+      }
+      if (t === "market_update" && typeof msg.id === "string" && typeof msg.platform_name === "string") {
+        handlers.onMarketUpdate?.({
+          id: msg.id,
+          platform_name: msg.platform_name,
+          price: msg.price == null ? null : Number(msg.price),
+        });
+        return;
+      }
+      if (t === "market_final" && typeof msg.id === "string") {
+        const rp = msg.reference_platform;
+        const refPlat =
+          rp === "bunjang" || rp === "feelway" || rp === "gogoose" ? (rp as PlatformId) : null;
+        handlers.onMarketFinal?.({
+          id: msg.id,
+          market_price: msg.market_price == null ? null : Number(msg.market_price),
+          profit_rate: Number(msg.profit_rate ?? 0),
+          reference_platform: refPlat,
+        });
       }
     } catch {
       /* ignore malformed chunks */

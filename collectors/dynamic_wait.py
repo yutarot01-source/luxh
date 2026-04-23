@@ -88,8 +88,8 @@ def make_infinite_scroll_action(
 
 def daangn_auto_wait_fetch_kwargs(
     *,
-    timeout_ms: int = 90_000,
-    settle_ms: int = 1_800,
+    timeout_ms: int = 32_000,
+    settle_ms: int = 900,
 ) -> dict[str, Any]:
     """당근 검색: 리스트 카드가 보일 때까지 + 네트워크 유휴."""
     return {
