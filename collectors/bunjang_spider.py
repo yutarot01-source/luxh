@@ -18,14 +18,16 @@ if __name__ == "__main__" and __package__ is None:
         sys.path.insert(0, str(_ROOT))
     __package__ = "collectors"
 
+import json
 import re
 
+import httpx
 from scrapling.engines.toolbelt.custom import Response
 
 from .base_collector import BaseCollector, FetcherConfig
 from .dynamic_wait import bunjang_auto_wait_fetch_kwargs
 from .models import RawListing
-from .text_utils import absolutize_url, parse_price_krw, strip_html_to_description
+from .text_utils import absolutize_url, extract_price_text, parse_price_krw, strip_html_to_description, utc_now_iso
 
 _PRODUCT_HREF = re.compile(r"/products/(\d+)", re.I)
 
@@ -51,10 +53,13 @@ class BunjangSpider(BaseCollector):
     def search_url(query: str) -> str:
         from urllib.parse import quote_plus
 
-        return f"https://m.bunjang.co.kr/search/products?q={quote_plus(query)}"
+        return f"https://api.bunjang.co.kr/api/1/find_v2.json?q={quote_plus(query)}&order=date&n=30&page=0"
 
     def search(self, query: str, *, limit: int = 40) -> list[RawListing]:
         url = self.search_url(query)
+        api_rows = self._search_api(url, limit=limit)
+        if api_rows:
+            return api_rows
         if self.stealth and self._use_auto_wait:
             aw = bunjang_auto_wait_fetch_kwargs(
                 scroll_rounds=self._scroll_rounds,
@@ -70,7 +75,21 @@ class BunjangSpider(BaseCollector):
             )
         return self.parse_search_response(resp, limit=limit)
 
+    def _search_api(self, url: str, *, limit: int) -> list[RawListing]:
+        try:
+            with httpx.Client(timeout=12.0, headers={"User-Agent": "Mozilla/5.0"}) as client:
+                r = client.get(url)
+                r.raise_for_status()
+            payload = r.json()
+        except Exception as exc:
+            print(f"[bunjang] api error={exc}")
+            return []
+        return _rows_from_api_payload(payload, limit)
+
     def parse_search_response(self, resp: Response, *, limit: int = 40) -> list[RawListing]:
+        api_rows = _parse_api_rows(resp, limit)
+        if api_rows:
+            return api_rows
         page_desc = self.response_description(resp)
         anchors = resp.css("a[href*='/products/']")
         seen: set[str] = set()
@@ -89,7 +108,8 @@ class BunjangSpider(BaseCollector):
             card_scope = parent if parent is not None else a
             card_html = str(card_scope.get())
             title = _safe_anchor_text(a, card_html)[:400]
-            price_krw = parse_price_krw(title) or parse_price_krw(card_html)
+            price_text = extract_price_text(card_html) or extract_price_text(title)
+            price_krw = parse_price_krw(price_text)
             img = str(a.css("img::attr(src)").get() or "").strip()
             if not img:
                 img = str(card_scope.css("img::attr(src)").get() or "").strip()
@@ -104,6 +124,9 @@ class BunjangSpider(BaseCollector):
                     image_url=absolutize_url(resp.url, img),
                     description_text=f"{title}\n\n--- card ---\n{strip_html_to_description(card_html)}\n\n--- page ---\n{page_desc}",
                     trade_state=trade,
+                    price_text=price_text,
+                    source_title=title,
+                    fetched_at=utc_now_iso(),
                 )
             )
             if len(rows) >= limit:
@@ -149,6 +172,57 @@ def _safe_anchor_text(a: object, card_html: str) -> str:
     except Exception:
         pass
     return strip_html_to_description(card_html, max_chars=400)
+
+
+def _parse_api_rows(resp: Response, limit: int) -> list[RawListing]:
+    text = str(resp.html_content)
+    m = re.search(r"<p>([\s\S]*?)</p>", text, re.I)
+    if m:
+        text = m.group(1)
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return []
+    return _rows_from_api_payload(payload, limit)
+
+
+def _rows_from_api_payload(payload: object, limit: int) -> list[RawListing]:
+    items = payload.get("list") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return []
+    rows: list[RawListing] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        pid = str(item.get("pid") or "").strip()
+        title = str(item.get("name") or "").strip()
+        if not pid or not title:
+            continue
+        raw_price = item.get("price")
+        price_text = f"{raw_price}원" if raw_price not in (None, "") else ""
+        price_krw = parse_price_krw(price_text)
+        img = str(item.get("product_image") or "").replace("{res}", "400").strip()
+        listing_url = f"https://m.bunjang.co.kr/products/{pid}"
+        status = str(item.get("status") or "")
+        trade_state = "판매중" if status == "0" else status or None
+        rows.append(
+            RawListing(
+                source="bunjang",
+                model_name=title[:400],
+                price_krw=price_krw,
+                status_text=str(item.get("location") or item.get("tag") or "")[:1000],
+                listing_url=listing_url,
+                image_url=img,
+                description_text=json.dumps(item, ensure_ascii=False)[:4000],
+                trade_state=trade_state,
+                price_text=price_text,
+                source_title=title[:400],
+                fetched_at=utc_now_iso(),
+            )
+        )
+        if len(rows) >= limit:
+            break
+    return rows
 
 
 def _acceptable_for_market(item: RawListing) -> bool:

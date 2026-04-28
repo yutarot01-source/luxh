@@ -77,13 +77,17 @@ BAG_BRAND_DEFS: tuple[BagBrandDef, ...] = (
     {"ko": "우영미", "en": "WOOYOUNGMI", "pattern": r"우영미|Wooyoungmi|WOOYOUNGMI"},
 )
 
-BAG_BRAND_CANONICAL: tuple[str, ...] = tuple(d["ko"] for d in BAG_BRAND_DEFS)
-BAG_BRAND_PAIRS: tuple[tuple[str, str], ...] = tuple((d["ko"], d["en"]) for d in BAG_BRAND_DEFS)
+POC_TARGET_BRANDS: tuple[str, ...] = ("샤넬", "루이비통", "구찌")
+_BRAND_DEF_BY_KO: dict[str, BagBrandDef] = {d["ko"]: d for d in BAG_BRAND_DEFS}
+_POC_BRAND_DEFS: tuple[BagBrandDef, ...] = tuple(_BRAND_DEF_BY_KO[b] for b in POC_TARGET_BRANDS)
 
-BRAND_MATCH_PATTERNS: tuple[tuple[str, str], ...] = tuple((d["ko"], d["pattern"]) for d in BAG_BRAND_DEFS)
+BAG_BRAND_CANONICAL: tuple[str, ...] = tuple(d["ko"] for d in _POC_BRAND_DEFS)
+BAG_BRAND_PAIRS: tuple[tuple[str, str], ...] = tuple((d["ko"], d["en"]) for d in _POC_BRAND_DEFS)
 
+BRAND_MATCH_PATTERNS: tuple[tuple[str, str], ...] = tuple((d["ko"], d["pattern"]) for d in _POC_BRAND_DEFS)
+
+assert BAG_BRAND_CANONICAL == POC_TARGET_BRANDS, f"expected PoC brands {POC_TARGET_BRANDS}, got {BAG_BRAND_CANONICAL}"
 assert len(BAG_BRAND_CANONICAL) == len({b for b in BAG_BRAND_CANONICAL}), "duplicate canonical ko brand"
-assert len(BAG_BRAND_CANONICAL) == 54, f"expected 54 bag brands, got {len(BAG_BRAND_CANONICAL)}"
 
 
 def build_daangn_bag_queries() -> list[str]:

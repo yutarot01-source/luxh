@@ -301,6 +301,8 @@ def _platform_prices_with_defaults(pp_in: dict[str, Any] | None) -> dict[str, in
 
     def one(key: str) -> int:
         v = pp.get(key)
+        if v is None and key == "gugus":
+            v = pp.get("gogoose")
         if v is None:
             return 0
         try:
@@ -339,6 +341,8 @@ def _avg_market_price_from_platforms(pp_in: dict[str, Any] | None) -> int | None
     vals: list[int] = []
     for k in ("bunjang", "feelway", "gugus"):
         v = pp.get(k)
+        if v is None and k == "gugus":
+            v = pp.get("gogoose")
         n = _coerce_reasonable_price(v if isinstance(v, (int, float)) else None)
         if n:
             vals.append(n)

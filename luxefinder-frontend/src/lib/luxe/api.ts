@@ -336,13 +336,24 @@ export function mapApiRowToListing(row: unknown): Listing {
   const platform: ListingSourcePlatform = SOURCE_PLATFORMS.includes(platRaw)
     ? platRaw
     : "daangn";
-  const status = (o.status as AnalysisStatus) || "완료";
+  const rawStatus = String(o.analysis_status ?? o.status ?? "").toLowerCase();
+  const status: AnalysisStatus =
+    rawStatus.includes("market_final") || rawStatus.includes("final") || o.status === "완료"
+      ? "finalized"
+      : rawStatus.includes("market_update")
+        ? "market_updating"
+        : rawStatus.includes("exclude") || o.status === "제외됨"
+          ? "excluded"
+          : "analyzing";
   const raw = String(o.brand ?? "").trim();
   const brand: Brand = BRANDS.includes(raw as Brand) ? (raw as Brand) : "기타";
   const price = Number(o.price ?? 0);
   const reference_price_krw =
-    typeof o.reference_price_krw === "number" && o.reference_price_krw > 0
+    typeof (o.market_reference_price ?? o.reference_price_krw) === "number" &&
+    Number(o.market_reference_price ?? o.reference_price_krw) > 0
       ? o.reference_price_krw
+        ? Number(o.reference_price_krw)
+        : Number(o.market_reference_price)
       : null;
   const refResolved = resolveReferencePrice({
     platform_prices,
@@ -358,23 +369,31 @@ export function mapApiRowToListing(row: unknown): Listing {
 
   return {
     id: String(o.id ?? ""),
+    title: String(o.title ?? o.rawTitle ?? o.raw_title ?? ""),
+    description: String(o.description ?? ""),
+    image: resolveApiMediaUrl(String(o.image ?? o.imageUrl ?? o.image_url ?? "")),
+    url: absolutizeDaangnSourceUrl(String(o.url ?? o.link ?? o.sourceUrl ?? o.source_url ?? "")),
     brand,
+    model_name: String(o.model_name ?? o.normalized_model_name ?? o.normalizedModel ?? o.rawTitle ?? ""),
+    normalized_model_name: String(o.normalized_model_name ?? o.normalizedModel ?? o.rawTitle ?? ""),
     rawTitle: String(o.rawTitle ?? ""),
-    normalizedModel: String(o.normalizedModel ?? o.rawTitle ?? ""),
+    normalizedModel: String(o.normalized_model_name ?? o.normalizedModel ?? o.rawTitle ?? ""),
     nickname: o.nickname != null ? String(o.nickname) : undefined,
-    price,
-    marketPrice: Number(o.marketPrice ?? o.price ?? 0),
-    arbitrageRate: Number(o.arbitrageRate ?? 0),
-    status_summary: String(o.status_summary ?? o.statusSummary ?? "").trim() || "—",
+    price: Number(o.daangn_price ?? o.price ?? 0),
+    daangn_price: Number(o.daangn_price ?? o.price ?? 0),
+    marketPrice: Number(o.market_reference_price ?? o.marketPrice ?? o.price ?? 0),
+    arbitrageRate: Number(o.profit_rate ?? o.arbitrageRate ?? 0),
+    profit_rate: Number(o.profit_rate ?? o.arbitrageRate ?? 0),
+    status_summary: String(o.status_summary ?? o.reasoning_short ?? o.statusSummary ?? "").trim() || "—",
     is_suspicious: Boolean(o.is_suspicious ?? o.isSuspicious),
-    expected_profit,
+    expected_profit: Number(o.expected_profit ?? expected_profit),
     location: String(o.location ?? "—"),
     postedMinutesAgo: Number(o.postedMinutesAgo ?? 0),
     collectedAt: (() => {
       const s = String(o.collectedAt ?? o.collected_at ?? "").trim();
       return s || undefined;
     })(),
-    imageUrl: resolveApiMediaUrl(String(o.imageUrl ?? o.image_url ?? "")),
+    imageUrl: resolveApiMediaUrl(String(o.image ?? o.imageUrl ?? o.image_url ?? "")),
     sourceUrl: absolutizeDaangnSourceUrl(
       String(o.sourceUrl ?? o.source_url ?? o.link ?? o.url ?? "")
     ),
@@ -385,7 +404,24 @@ export function mapApiRowToListing(row: unknown): Listing {
     platform,
     platformLinks,
     status,
-    excludeReason: o.excludeReason != null ? String(o.excludeReason) : undefined,
+    excludeReason: o.excludeReason != null ? String(o.excludeReason) : o.exclude_reason != null ? String(o.exclude_reason) : undefined,
+    exclude_reason: o.exclude_reason != null ? String(o.exclude_reason) : undefined,
+    telegram_status: String(o.telegram_status ?? (status === "finalized" ? "pending" : "pending")),
+    created_at: String(o.created_at ?? o.collectedAt ?? o.collected_at ?? ""),
+    updated_at: String(o.updated_at ?? ""),
+    bunjang_price: platform_prices.bunjang_lowest_krw,
+    feelway_price: platform_prices.feelway_lowest_krw,
+    gugus_price: platform_prices.gogoose_lowest_krw,
+    bunjang_url: platformLinks?.bunjang,
+    feelway_url: platformLinks?.feelway,
+    gugus_url: platformLinks?.gogoose,
+    market_reference_price: Number(o.market_reference_price ?? reference_price_krw ?? 0) || null,
+    market_reference_source: String(o.market_reference_source ?? o.market_reference_basis ?? o.reference_platform ?? ""),
+    market_reference_basis: String(o.market_reference_basis ?? ""),
+    condition_grade: String(o.condition_grade ?? ai.condition_grade),
+    has_authenticity_proof: Boolean(o.has_authenticity_proof ?? ai.warranty ?? ai.receipt),
+    reasoning_short: String(o.reasoning_short ?? o.status_summary ?? ""),
+    platform_basis: (o.platform_basis && typeof o.platform_basis === "object" ? o.platform_basis : undefined) as Listing["platform_basis"],
     ai_status: ai,
     platform_prices,
     reference_platform: (o.reference_platform as Listing["reference_platform"]) ?? null,

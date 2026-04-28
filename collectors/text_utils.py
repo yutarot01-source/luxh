@@ -3,27 +3,57 @@ from __future__ import annotations
 import json
 import re
 from html import unescape
+from datetime import datetime, timezone
 from typing import Any
 
-_WON_RE = re.compile(r"(?P<n>[\d,]+)\s*원")
-_MAN_RE = re.compile(r"(?P<n>[\d.]+)\s*만")
+_WON_RE = re.compile(r"(?P<n>\d[\d,]*)\s*원")
+_MAN_RE = re.compile(r"(?P<n>\d[\d,]*(?:\.\d+)?)\s*만\s*원?")
+_BAEK_MAN_RE = re.compile(r"(?:(?P<baek>\d+)\s*백)?\s*(?P<man>\d+)\s*만\s*원?")
 
 
 def parse_price_krw(text: str | None) -> int | None:
     """한국어 가격 문자열에서 원 단위 정수 추출."""
     if not text:
         return None
-    t = text.strip().replace("\u00a0", " ")
+    t = unescape(str(text)).strip().replace("\u00a0", " ")
+    t = re.sub(r"\s+", " ", t)
+    if re.search(r"나눔|무료", t, re.I):
+        return 0
+    if re.search(r"가격\s*없음|문의|상담|ask|contact", t, re.I):
+        return None
+    if re.fullmatch(r"\d[\d,]*(?:\.0+)?", t):
+        return int(float(t.replace(",", "")))
+    candidates: list[tuple[int, int]] = []
     m = _WON_RE.search(t)
-    if m:
-        return int(m.group("n").replace(",", ""))
-    m2 = _MAN_RE.search(t)
-    if m2:
-        return int(float(m2.group("n").replace(",", "")) * 10_000)
-    digits = re.sub(r"[^\d]", "", t)
-    if len(digits) >= 4:
-        return int(digits)
-    return None
+    for m in _WON_RE.finditer(t):
+        n = int(m.group("n").replace(",", ""))
+        candidates.append((m.start(), n))
+    for m in _BAEK_MAN_RE.finditer(t):
+        baek = int(m.group("baek") or 0)
+        man = int(m.group("man") or 0)
+        candidates.append((m.start(), (baek * 100 + man) * 10_000))
+    for m in _MAN_RE.finditer(t):
+        n = float(m.group("n").replace(",", ""))
+        candidates.append((m.start(), int(n * 10_000)))
+    valid = [(pos, price) for pos, price in candidates if 0 <= price <= 500_000_000]
+    if not valid:
+        return None
+    valid.sort(key=lambda item: item[0])
+    return valid[0][1]
+
+
+def extract_price_text(text: str | None) -> str:
+    if not text:
+        return ""
+    t = unescape(str(text)).replace("\u00a0", " ")
+    t = re.sub(r"\s+", " ", t).strip()
+    for regex in (_WON_RE, _BAEK_MAN_RE, _MAN_RE):
+        m = regex.search(t)
+        if m:
+            return m.group(0).strip()
+    if re.search(r"나눔|무료", t, re.I):
+        return "나눔"
+    return ""
 
 
 def strip_html_to_description(html: str, max_chars: int = 120_000) -> str:
@@ -43,6 +73,10 @@ def absolutize_url(base: str, href: str | None) -> str:
     from urllib.parse import urljoin
 
     return urljoin(base, href)
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def find_json_list_by_key(obj: Any, target_key: str) -> list | None:

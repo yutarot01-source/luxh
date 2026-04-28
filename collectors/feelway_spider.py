@@ -18,14 +18,16 @@ if __name__ == "__main__" and __package__ is None:
         sys.path.insert(0, str(_ROOT))
     __package__ = "collectors"
 
+import json
 import re
+from html import unescape
 
 from scrapling.engines.toolbelt.custom import Response
 
 from .base_collector import BaseCollector, FetcherConfig
 from .dynamic_wait import feelway_auto_wait_fetch_kwargs
 from .models import RawListing
-from .text_utils import absolutize_url, parse_price_krw, strip_html_to_description
+from .text_utils import absolutize_url, extract_price_text, parse_price_krw, strip_html_to_description, utc_now_iso
 
 _PRICE_CAND = re.compile(r"([\d,]{5,})\s*(?:원|$|\s)")
 
@@ -71,6 +73,9 @@ class FeelwaySpider(BaseCollector):
         return self.parse_search_response(resp, limit=limit)
 
     def parse_search_response(self, resp: Response, *, limit: int = 30) -> list[RawListing]:
+        props_rows = _parse_data_props_rows(resp, limit)
+        if props_rows:
+            return props_rows
         page_desc = self.response_description(resp)
         rows: list[RawListing] = []
         seen: set[str] = set()
@@ -100,7 +105,8 @@ class FeelwaySpider(BaseCollector):
             except Exception:
                 blob = str(a.get())
             title = _safe_anchor_text(a, blob).strip()[:400]
-            price_krw = parse_price_krw(title) or parse_price_krw(blob) or _best_price_from_snippet(blob)
+            price_text = extract_price_text(blob) or extract_price_text(title)
+            price_krw = parse_price_krw(price_text) or _best_price_from_snippet(blob)
             img = str(a.css("img::attr(src)").get() or "").strip()
             if not img:
                 mimg = re.search(r"https://[^\s\"']+\.(?:jpg|jpeg|png|webp)", blob, re.I)
@@ -116,6 +122,9 @@ class FeelwaySpider(BaseCollector):
                     image_url=absolutize_url(resp.url, img),
                     description_text=f"{title}\n\n--- card ---\n{strip_html_to_description(blob)}\n\n--- page ---\n{page_desc}",
                     trade_state=trade,
+                    price_text=price_text,
+                    source_title=title,
+                    fetched_at=utc_now_iso(),
                 )
             )
             if len(rows) >= limit:
@@ -152,6 +161,63 @@ def _best_price_from_snippet(html: str) -> int | None:
         if 10_000 <= n <= 500_000_000:
             candidates.append(n)
     return min(candidates) if candidates else None
+
+
+def _parse_data_props_rows(resp: Response, limit: int) -> list[RawListing]:
+    html = str(resp.html_content)
+    items = None
+    for m in re.finditer(r"data-props=(['\"])([\s\S]*?)\1", html, re.I):
+        raw = unescape(m.group(2))
+        if "searchResult" not in raw or "items" not in raw:
+            continue
+        try:
+            props = json.loads(raw)
+        except Exception:
+            continue
+        result = props.get("searchResult") if isinstance(props, dict) else None
+        maybe_items = result.get("items") if isinstance(result, dict) else None
+        if isinstance(maybe_items, list):
+            items = maybe_items
+            break
+    if not isinstance(items, list):
+        return []
+    rows: list[RawListing] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        g_no = str(item.get("g_no") or "").strip()
+        title = str(item.get("g_name") or "").strip()
+        if not g_no or not title:
+            continue
+        price = item.get("special_price") or item.get("dp_basic_price") or item.get("g_price")
+        try:
+            price_krw = int(price)
+        except (TypeError, ValueError):
+            price_krw = parse_price_krw(f"{price}원")
+        price_text = f"{price_krw}원" if price_krw is not None else ""
+        photo = str(item.get("g_photo") or item.get("g_photo1") or "").strip()
+        if photo and not photo.startswith("http"):
+            photo = "https://cdn.feelway.com/" + photo.lstrip("/")
+        brand = str(item.get("brand_name") or "").strip() or "item"
+        listing_url = f"https://www.feelway.com/view_goods.php?g_no={g_no}"
+        rows.append(
+            RawListing(
+                source="feelway",
+                model_name=title[:400],
+                price_krw=price_krw,
+                status_text=str(item.get("brand_name") or "")[:1000],
+                listing_url=listing_url,
+                image_url=photo,
+                description_text=json.dumps(item, ensure_ascii=False)[:4000],
+                trade_state="판매중",
+                price_text=price_text,
+                source_title=title[:400],
+                fetched_at=utc_now_iso(),
+            )
+        )
+        if len(rows) >= limit:
+            break
+    return rows
 
 
 def _safe_anchor_text(a: object, blob_html: str) -> str:
@@ -195,6 +261,9 @@ def _parse_fallback_blocks(resp: Response, page_desc: str, limit: int) -> list[R
                     image_url="",
                     description_text=f"{title}\n\n--- page ---\n{page_desc}",
                     trade_state=_trade_from_text(h),
+                    price_text=extract_price_text(h),
+                    source_title=title[:300],
+                    fetched_at=utc_now_iso(),
                 )
             )
             if len(rows) >= limit:

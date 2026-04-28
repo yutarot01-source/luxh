@@ -109,7 +109,16 @@ class BaseCollector:
                 headers = dict(kw.get("headers") or {})
                 headers.setdefault("User-Agent", ua)
                 kw["headers"] = headers
-        return stealth_fetch(url, stealth=self.stealth, cfg=self.fetcher_cfg, **kw)
+        requested_stealth = bool(self.stealth)
+        fetcher_name = "StealthyFetcher" if requested_stealth else "Fetcher.get"
+        try:
+            print(f"[{self.site_id}] fetcher={fetcher_name}")
+            return stealth_fetch(url, stealth=requested_stealth, cfg=self.fetcher_cfg, **kw)
+        except Exception:
+            if not requested_stealth:
+                raise
+            print(f"[{self.site_id}] fetcher=Fetcher.get fallback")
+            return stealth_fetch(url, stealth=False, cfg=self.fetcher_cfg, **kw)
 
     @staticmethod
     def response_description(response: "Response") -> str:

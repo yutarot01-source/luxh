@@ -4,7 +4,14 @@ export type { Brand };
 
 export type Grade = "S" | "A" | "B";
 
-export type AnalysisStatus = "분석중" | "완료" | "제외됨";
+export type AnalysisStatus =
+  | "analyzing"
+  | "market_updating"
+  | "finalized"
+  | "excluded"
+  | "분석중"
+  | "완료"
+  | "제외됨";
 
 /**
  * FastAPI `platform_prices` — 플랫폼별 최저가(원).
@@ -33,7 +40,13 @@ export interface AiStatus {
 
 export interface Listing {
   id: string;
+  title?: string;
+  description?: string;
+  image?: string;
+  url?: string;
   brand: Brand;
+  model_name?: string;
+  normalized_model_name?: string;
   rawTitle: string;
   normalizedModel: string;
   nickname?: string;
@@ -62,6 +75,25 @@ export interface Listing {
   platformLinks?: PlatformDetailLinks;
   status: AnalysisStatus;
   excludeReason?: string;
+  exclude_reason?: string;
+  telegram_status?: "sent" | "below_threshold" | "failed" | "pending" | string;
+  updated_at?: string;
+  created_at?: string;
+  daangn_price?: number;
+  bunjang_price?: number;
+  feelway_price?: number;
+  gugus_price?: number;
+  bunjang_url?: string;
+  feelway_url?: string;
+  gugus_url?: string;
+  market_reference_price?: number | null;
+  market_reference_source?: string | null;
+  market_reference_basis?: string | null;
+  profit_rate?: number;
+  condition_grade?: Grade | string;
+  has_authenticity_proof?: boolean;
+  reasoning_short?: string;
+  platform_basis?: Record<string, { basis?: string; sold_count?: number; sample_count?: number; status?: string; error?: string }>;
 
   /** FastAPI `ai_status` */
   ai_status: AiStatus;

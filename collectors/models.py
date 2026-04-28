@@ -23,6 +23,12 @@ class RawListing:
     """판매중 / 거래완료 / 예약중 등 원문 라벨 (사이트별 상이)."""
     raw_html_excerpt: str | None = None
     """디버깅·셀렉터 튜닝용. 운영에서는 비활성화 권장."""
+    price_text: str = ""
+    """원문에 표시된 가격 문자열."""
+    source_title: str = ""
+    """원문 카드/상세 제목."""
+    fetched_at: str = ""
+    """수집 시각(UTC ISO)."""
 
     def to_json_dict(self) -> dict[str, Any]:
         return asdict(self)

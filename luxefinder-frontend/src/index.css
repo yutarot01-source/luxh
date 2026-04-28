@@ -102,4 +102,17 @@
   .shadow-card-hover { box-shadow: var(--shadow-card-hover); }
   .shadow-glow { box-shadow: var(--shadow-glow); }
   .bg-gradient-primary { background: var(--gradient-primary); }
+  .input-dark {
+    width: 100%;
+    border-radius: 0.5rem;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(15 23 42 / 0.9);
+    padding: 0.65rem 0.75rem;
+    color: rgb(241 245 249);
+    outline: none;
+  }
+  .input-dark:focus {
+    border-color: rgb(52 211 153 / 0.7);
+    box-shadow: 0 0 0 3px rgb(52 211 153 / 0.12);
+  }
 }
