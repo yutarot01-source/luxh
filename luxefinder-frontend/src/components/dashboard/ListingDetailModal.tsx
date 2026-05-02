@@ -5,6 +5,15 @@ import { cn } from "@/lib/utils";
 const won = (v?: number | null) =>
   v == null || Number.isNaN(Number(v)) ? "확인 중" : `${Math.round(Number(v)).toLocaleString("ko-KR")}원`;
 const pct = (v?: number | null) => `${Number(v ?? 0).toFixed(1)}%`;
+const metricWon = (v?: number | null) => (v && v > 0 ? won(v) : "확인 중");
+const metricPct = (v?: number | null) => (v && v > 0 ? pct(v) : "확인 중");
+const isExcluded = (listing: Listing) => listing.status === "excluded" || listing.status === "제외됨";
+const referenceText = (listing: Listing, v?: number | null) => {
+  if (v && v > 0) return won(v);
+  if (isExcluded(listing)) return "제외";
+  if (listing.status === "finalized" || listing.status === "완료") return "거래완료가 없음";
+  return "확인 중";
+};
 
 export function ListingDetailModal({ listing, onClose }: { listing: Listing | null; onClose: () => void }) {
   if (!listing) return null;
@@ -13,16 +22,16 @@ export function ListingDetailModal({ listing, onClose }: { listing: Listing | nu
   const gauge = Math.max(0, Math.min(100, rate));
   const img = listing.image || listing.imageUrl;
   const basis = listing.market_reference_basis || listing.market_reference_source || "";
-  const basisText = basis.includes("sold") ? "거래완료가 기준" : basis ? "판매중 가격 참고" : "기준 산정 중";
+  const basisText = basis === "sold" || basis.includes("sold") ? "거래완료가 기준" : "거래완료가 없음";
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/75 p-2 backdrop-blur-sm sm:items-center sm:p-3"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="max-h-[94dvh] w-full max-w-6xl overflow-y-auto rounded-lg border border-white/10 bg-[#08111f] text-slate-100 shadow-2xl">
+      <div className="my-2 max-h-[calc(100dvh-1rem)] w-full max-w-6xl overflow-y-auto rounded-lg border border-white/10 bg-[#08111f] text-slate-100 shadow-2xl sm:my-0 sm:max-h-[94dvh]">
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[#08111f]/95 px-5 py-4 backdrop-blur">
           <div>
             <h2 className="text-lg font-black">{listing.title || listing.rawTitle}</h2>
@@ -52,18 +61,23 @@ export function ListingDetailModal({ listing, onClose }: { listing: Listing | nu
           <section className="space-y-4">
             <div className="grid gap-3 md:grid-cols-3">
               <Metric label="당근 판매가" value={won(listing.daangn_price ?? listing.price)} />
-              <Metric label="기준 시세" value={won(listing.market_reference_price ?? listing.reference_price_krw)} sub={basisText} />
-              <Metric label="예상 차익" value={won(profit)} tone={profit >= 0 ? "good" : "bad"} />
+              <Metric label="거래완료 기준 시세" value={referenceText(listing, listing.market_reference_price ?? listing.reference_price_krw)} sub={basisText} />
+              <Metric label="기준 시세 수익률" value={metricPct(rate)} sub={metricWon(profit)} tone={profit > 0 ? "good" : "bad"} />
             </div>
 
             <div className="rounded-lg border border-white/10 bg-[#0b1120] p-4">
               <div className="mb-3 flex items-center justify-between">
                 <div>
-                  <p className="text-xs text-slate-400">예상 시세차익 게이지</p>
-                  <p className={cn("text-3xl font-black", profit >= 0 ? "text-emerald-300" : "text-rose-300")}>{pct(rate)}</p>
+                  <p className="text-xs text-slate-400">기준 플랫폼</p>
+                  <p className="text-sm font-black text-slate-300">{platformLabel(listing.reference_platform)}</p>
+                  <p className="mt-1 text-xs text-slate-500">{basisText}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-slate-400">기준 시세 수익률</p>
+                  <p className={cn("text-sm font-black", profit > 0 ? "text-emerald-300" : "text-rose-300")}>{metricPct(rate)}</p>
                 </div>
                 <div className="text-right text-xs text-slate-400">
-                  <p>평균 차익 {won(profit)}</p>
+                  <p>기준 차익 {metricWon(profit)}</p>
                   <p>최저/최고 시세 {won(minPlatform(listing))} / {won(maxPlatform(listing))}</p>
                 </div>
               </div>
@@ -73,9 +87,9 @@ export function ListingDetailModal({ listing, onClose }: { listing: Listing | nu
             </div>
 
             <div className="grid gap-3 md:grid-cols-3">
-              <PlatformCard name="번개장터" platform="bunjang" price={listing.bunjang_price} url={listing.bunjang_url} listing={listing} />
-              <PlatformCard name="필웨이" platform="feelway" price={listing.feelway_price} url={listing.feelway_url} listing={listing} />
-              <PlatformCard name="구구스" platform="gogoose" price={listing.gugus_price} url={listing.gugus_url} listing={listing} />
+              <PlatformCard name="번개장터" platform="bunjang" price={listing.bunjang_active_price ?? listing.bunjang_price} url={listing.bunjang_active_url ?? listing.bunjang_url} listing={listing} />
+              <PlatformCard name="필웨이" platform="feelway" price={listing.feelway_active_price ?? listing.feelway_price} url={listing.feelway_active_url ?? listing.feelway_url} listing={listing} />
+              <PlatformCard name="구구스" platform="gogoose" price={listing.gugus_active_price ?? listing.gugus_price} url={listing.gugus_active_url ?? listing.gugus_url} listing={listing} />
             </div>
 
             <div className="grid gap-3 md:grid-cols-2">
@@ -106,6 +120,14 @@ export function ListingDetailModal({ listing, onClose }: { listing: Listing | nu
   );
 }
 
+function platformLabel(platform?: string | null) {
+  if (platform === "daangn") return "당근마켓";
+  if (platform === "bunjang") return "번개장터";
+  if (platform === "feelway") return "필웨이";
+  if (platform === "gogoose" || platform === "gugus") return "구구스";
+  return "확인 중";
+}
+
 function InfoGrid({ listing }: { listing: Listing }) {
   const rows = [
     ["브랜드", listing.brand],
@@ -132,7 +154,7 @@ function Metric({ label, value, sub, tone }: { label: string; value: string; sub
   return (
     <div className="rounded-lg border border-white/10 bg-[#0b1120] p-4">
       <p className="text-xs text-slate-400">{label}</p>
-      <p className={cn("mt-2 text-xl font-black", tone === "good" && "text-emerald-300", tone === "bad" && "text-rose-300")}>{value}</p>
+      <p className={cn("mt-2 text-sm font-black", tone === "good" && "text-emerald-300", tone === "bad" && "text-rose-300")}>{value}</p>
       {sub ? <p className="mt-1 text-[11px] text-slate-500">{sub}</p> : null}
     </div>
   );
@@ -140,32 +162,34 @@ function Metric({ label, value, sub, tone }: { label: string; value: string; sub
 
 function platformPriceText(listing: Listing, platform: "bunjang" | "feelway" | "gogoose", price?: number | null) {
   if (price && price > 0) return won(price);
+  if (isExcluded(listing)) return "제외";
   const basis = listing.platform_basis?.[platform];
-  if (basis?.status === "failed") return "조회 실패";
+  if (basis?.status === "failed") return "결과 없음";
   if (basis?.basis === "no_reference" || basis?.status === "ok") return "결과 없음";
   if (listing.status === "finalized") return "결과 없음";
   return "확인 중";
 }
 
 function PlatformCard({ name, platform, price, url, listing }: { name: string; platform: "bunjang" | "feelway" | "gogoose"; price?: number | null; url?: string; listing: Listing }) {
-  const ref = listing.market_reference_price || listing.reference_price_krw || price || 0;
-  const profit = ref ? ref - listing.price : 0;
-  const rate = ref ? (profit / ref) * 100 : 0;
+  const hasPlatformPrice = Boolean(price && price > 0);
+  const activePrice = price || 0;
+  const profit = hasPlatformPrice ? activePrice - listing.price : null;
+  const rate = profit != null && activePrice ? (profit / activePrice) * 100 : null;
   return (
     <div className="rounded-lg border border-white/10 bg-[#0b1120] p-4">
       <div className="mb-3 flex items-center justify-between">
         <p className="font-bold">{name}</p>
         <ShieldCheck className="h-4 w-4 text-emerald-300" />
       </div>
-      <p className="text-xs text-slate-500">최저/평균/최고가</p>
-      <p className="mt-1 text-lg font-black">{platformPriceText(listing, platform, price)}</p>
-      <p className="mt-2 text-xs text-slate-400">시세차익 {won(profit)} · {pct(rate)}</p>
+      <p className="text-xs text-slate-500">현재 판매중 가격</p>
+      <p className="mt-1 text-sm font-black">{platformPriceText(listing, platform, price)}</p>
+      <p className="mt-2 text-xs text-slate-400">판매중 참고차익 {metricWon(profit)} · {metricPct(rate)}</p>
       {url ? (
         <a href={url} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-xs font-bold text-sky-300">
           바로가기 <ExternalLink className="h-3 w-3" />
         </a>
       ) : (
-        <p className="mt-3 text-xs text-slate-500">시세 조회 실패 또는 링크 없음</p>
+        <p className="mt-3 text-xs text-slate-500">시세 확인 중</p>
       )}
     </div>
   );

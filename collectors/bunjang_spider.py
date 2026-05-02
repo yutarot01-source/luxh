@@ -19,6 +19,7 @@ if __name__ == "__main__" and __package__ is None:
     __package__ = "collectors"
 
 import json
+import os
 import re
 
 import httpx
@@ -30,6 +31,12 @@ from .models import RawListing
 from .text_utils import absolutize_url, extract_price_text, parse_price_krw, strip_html_to_description, utc_now_iso
 
 _PRODUCT_HREF = re.compile(r"/products/(\d+)", re.I)
+_API_STATUS_TRADE_STATE = {
+    "0": "판매중",
+    "1": "거래완료",
+    "2": "예약중",
+    "3": "거래완료",
+}
 
 
 class BunjangSpider(BaseCollector):
@@ -50,25 +57,50 @@ class BunjangSpider(BaseCollector):
         self._use_auto_wait = use_auto_wait
 
     @staticmethod
-    def search_url(query: str) -> str:
+    def search_url(query: str, *, page: int = 0) -> str:
         from urllib.parse import quote_plus
 
-        return f"https://api.bunjang.co.kr/api/1/find_v2.json?q={quote_plus(query)}&order=date&n=30&page=0"
+        page = max(0, int(page))
+        return f"https://api.bunjang.co.kr/api/1/find_v2.json?q={quote_plus(query)}&order=date&n=30&page={page}"
+
+    @staticmethod
+    def search_page_url(query: str) -> str:
+        from urllib.parse import quote_plus
+
+        return f"https://m.bunjang.co.kr/search/products?q={quote_plus(query)}&order=date"
 
     def search(self, query: str, *, limit: int = 40) -> list[RawListing]:
-        url = self.search_url(query)
-        api_rows = self._search_api(url, limit=limit)
-        if api_rows:
-            return api_rows
+        return self.search_page(query, page=1, limit=limit)
+
+    def search_page(self, query: str, *, page: int = 1, limit: int = 40) -> list[RawListing]:
+        page_index = max(0, int(page) - 1)
+        api_url = self.search_url(query, page=page_index)
+        api_rows = self._search_api(api_url, limit=limit)
+        global_rows: list[RawListing] = []
+        if api_rows or global_rows:
+            merged: list[RawListing] = []
+            seen: set[str] = set()
+            for row in [*global_rows, *api_rows]:
+                key = row.listing_url or row.model_name
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(row)
+                if len(merged) >= limit:
+                    break
+            return merged
+        if page_index > 0:
+            return []
+        page_url = self.search_page_url(query)
         if self.stealth and self._use_auto_wait:
             aw = bunjang_auto_wait_fetch_kwargs(
                 scroll_rounds=self._scroll_rounds,
                 scroll_pause_ms=self._scroll_pause_ms,
             )
-            resp = self.fetch(url, **aw)
+            resp = self.fetch(page_url, **aw)
         else:
             resp = self.fetch(
-                url,
+                page_url,
                 wait_selector="a[href*='/products/']",
                 wait_selector_state="visible",
                 wait=1500,
@@ -203,8 +235,8 @@ def _rows_from_api_payload(payload: object, limit: int) -> list[RawListing]:
         price_krw = parse_price_krw(price_text)
         img = str(item.get("product_image") or "").replace("{res}", "400").strip()
         listing_url = f"https://m.bunjang.co.kr/products/{pid}"
-        status = str(item.get("status") or "")
-        trade_state = "판매중" if status == "0" else status or None
+        status = str(item.get("status") or "").strip()
+        trade_state = _API_STATUS_TRADE_STATE.get(status)
         rows.append(
             RawListing(
                 source="bunjang",

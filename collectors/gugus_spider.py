@@ -67,9 +67,14 @@ class GugusSpider(BaseCollector):
         return [t.replace("{q}", enc) for t in self._search_templates]
 
     def search(self, query: str, *, limit: int = 30) -> list[RawListing]:
-        ajax_rows = self._search_ajax(query, limit=limit)
+        return self.search_page(query, page=1, limit=limit)
+
+    def search_page(self, query: str, *, page: int = 1, limit: int = 30) -> list[RawListing]:
+        ajax_rows = self._search_ajax(query, limit=limit, page=page)
         if ajax_rows:
             return self._enrich_detail_pages(ajax_rows, query=query, limit=limit)
+        if int(page) > 1:
+            return []
         last: Response | None = None
         fetch_kw = gugus_auto_wait_fetch_kwargs() if (self.stealth and self._use_auto_wait) else {}
         for url in self.search_url_candidates(query):
@@ -124,7 +129,7 @@ class GugusSpider(BaseCollector):
             out.append(row)
         return out
 
-    def _search_ajax(self, query: str, *, limit: int) -> list[RawListing]:
+    def _search_ajax(self, query: str, *, limit: int, page: int = 1) -> list[RawListing]:
         brand_no = _brand_no_from_query(query)
         referer = self.search_url_candidates(query)[0]
         if brand_no is None:
@@ -137,10 +142,11 @@ class GugusSpider(BaseCollector):
             return []
         body = {
             "perPage": max(20, min(max(int(limit) * 8, 60), 100)),
-            "page": 1,
+            "page": max(1, int(page)),
             "searchTerm": query,
             "inputSearchTerm": query,
             "inputSearchTermYn": "Y",
+            "orginSearchTermYn": "Y",
             "uperCategoryList": [],
             "categoryList": [],
             "brandList": [brand_no],
@@ -151,9 +157,15 @@ class GugusSpider(BaseCollector):
             "excludeTradingYn": "N",
             "purcvPsbYn": "N",
             "sortOrder": "",
+            "downloadYn": "N",
         }
         try:
             with httpx.Client(timeout=15.0, headers={"User-Agent": "Mozilla/5.0", "Referer": referer}) as client:
+                r = client.post("https://m.gugus.co.kr/search/selectOpenSearchGoods", json=body)
+                r.raise_for_status()
+                rows = _parse_ajax_products(r.text, limit=limit, query=query)
+                if rows:
+                    return rows
                 r = client.post("https://m.gugus.co.kr/goodsList/selectListGoodsBase", json=body)
                 r.raise_for_status()
         except Exception as exc:
@@ -267,13 +279,19 @@ _QUERY_TERM_ALIASES = {
     "알마": ("알마", "alma"),
     "블랙": ("블랙", "black", "noir", "느와르", "누아르", "노아르"),
     "에피": ("에피", "에삐", "epi"),
+    "포쉐트": ("포쉐트", "pochette"),
+    "메티스": ("메티스", "metis"),
+    "앙프렝뜨": ("앙프렝뜨", "앙프렝트", "앙프레뜨", "empreinte"),
+    "앙프렝트": ("앙프렝뜨", "앙프렝트", "앙프레뜨", "empreinte"),
+    "앙프레뜨": ("앙프렝뜨", "앙프렝트", "앙프레뜨", "empreinte"),
     "모노그램": ("모노그램", "monogram"),
     "브라운": ("브라운", "brown", "marron"),
     "캐비어": ("캐비어", "caviar"),
     "램스킨": ("램스킨", "lambskin"),
     "은장": ("은장", "실버", "silver", "shw"),
     "금장": ("금장", "골드", "gold", "ghw"),
-    "bb": ("bb",),
+    "bb": ("bb", "비비"),
+    "비비": ("bb", "비비"),
     "mm": ("mm",),
     "pm": ("pm",),
     "gm": ("gm",),
@@ -308,6 +326,49 @@ def _has_group(text: str, group: tuple[str, ...]) -> bool:
     return False
 
 
+def _query_match_score(searchable: str, title: str, groups: list[tuple[str, ...]], query: str) -> int:
+    if not groups:
+        return 1
+    title_n = (title or "").lower()
+    compact_title = title_n.replace(" ", "")
+    compact_query = (query or "").lower().replace(" ", "")
+    score = 0
+    for group in groups:
+        if _has_group(searchable, group):
+            score += 2
+        if _has_group(title_n, group):
+            score += 3
+    if compact_query and compact_query in compact_title:
+        score += 10
+    return score
+
+
+def _gugus_trade_state(item: dict) -> str | None:
+    blob = " ".join(
+        str(item.get(k) or "")
+        for k in (
+            "saleStatNm",
+            "saleMgmtStatNm",
+            "saleStatCd",
+            "saleMgmtStatCd",
+            "trdStatNm",
+            "gdsStatNm",
+        )
+    ).strip()
+    if not blob:
+        return None
+    if "거래완료" in blob or "판매완료" in blob or "매각완료" in blob:
+        return "거래완료"
+    if "거래진행" in blob or "예약" in blob:
+        return "거래진행중"
+    if "판매중" in blob or "판매" in blob:
+        return "판매중"
+    lowered = blob.lower()
+    if any(k in lowered for k in ("sold", "soldout", "sold_out", "closed")):
+        return "거래완료"
+    return blob
+
+
 def _parse_ajax_products(html: str, *, limit: int, query: str = "") -> list[RawListing]:
     m = re.search(r"var\s+products\s*=\s*(\[[\s\S]*?\]);", html)
     if not m:
@@ -316,10 +377,10 @@ def _parse_ajax_products(html: str, *, limit: int, query: str = "") -> list[RawL
         items = json.loads(m.group(1))
     except Exception:
         return []
-    rows: list[RawListing] = []
+    scored_rows: list[tuple[int, int, RawListing]] = []
     groups = _query_groups(query)
     wants_bag = any(k in (query or "") for k in ("가방", "핸드백", "백"))
-    for item in items:
+    for idx, item in enumerate(items):
         if not isinstance(item, dict):
             continue
         gds_no = str(item.get("gdsNo") or "").strip()
@@ -337,7 +398,8 @@ def _parse_ajax_products(html: str, *, limit: int, query: str = "") -> list[RawL
         searchable = f"{title} {category_text} {item.get('gdsTag') or ''}".lower()
         # Do not enforce every query token at list level: Gugus often omits
         # color/material on list cards and only exposes it on the detail page.
-        if groups and not any(_has_group(searchable, group) for group in groups):
+        score = _query_match_score(searchable, title, groups, query)
+        if groups and score <= 0:
             continue
         price = item.get("dcSalePrc") or item.get("prstSalePrc")
         try:
@@ -349,24 +411,33 @@ def _parse_ajax_products(html: str, *, limit: int, query: str = "") -> list[RawL
         if img and not img.startswith("http"):
             img = "https://image.gugus.co.kr" + img
         listing_url = f"https://m.gugus.co.kr/goods/viewGoods?goodsNo={gds_no}"
-        rows.append(
+        trade_state = _gugus_trade_state(item)
+        status_text = " ".join(
+            str(item.get(k) or "")
+            for k in ("saleStatNm", "saleMgmtStatNm", "saleStatCd", "saleMgmtStatCd")
+            if str(item.get(k) or "")
+        )[:1000]
+        scored_rows.append(
+            (
+                score,
+                -idx,
             RawListing(
                 source="gugus",
                 model_name=title[:400],
                 price_krw=price_krw,
-                status_text=str(item.get("saleStatNm") or item.get("saleMgmtStatNm") or "")[:1000],
+                status_text=status_text,
                 listing_url=listing_url,
                 image_url=img,
                 description_text=json.dumps(item, ensure_ascii=False)[:4000],
-                trade_state=str(item.get("saleStatNm") or "") or None,
+                trade_state=trade_state,
                 price_text=price_text,
                 source_title=title[:400],
                 fetched_at=utc_now_iso(),
+            ),
             )
         )
-        if len(rows) >= limit:
-            break
-    return rows
+    scored_rows.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return [row for _, _, row in scored_rows[:limit]]
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ import os
 import sys
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -30,7 +31,20 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from api.listing_builder import enriched_to_listing_dict
-from api.scrape_service import run_scrape_cycle, start_background_scraper, stop_background_scraper
+from api.scrape_service import (
+    MARKET_PLATFORMS,
+    MarketQuote,
+    _compare_one_platform,
+    _finalize_market,
+    _env_int,
+    _market_queries,
+    _market_target,
+    _process_market_for_listing,
+    _publish_market_update,
+    run_scrape_cycle,
+    start_background_scraper,
+    stop_background_scraper,
+)
 from api.settings_routes import SettingsPayload, TelegramTestPayload
 from api.settings_store import DEFAULT_CATEGORY_IDS, DashboardSettings, SettingsStore
 from api.state_store import ListingState, SSEHub
@@ -40,7 +54,7 @@ from collectors.models import DaangnEnrichedListing, RawListing
 
 app = FastAPI(title="LuxeFinder API", version="0.1.0")
 
-state = ListingState(max_items=80)
+state = ListingState(max_items=_env_int("LUXEFINDER_STATE_MAX_ITEMS", 5000))
 hub = SSEHub()
 settings_store = SettingsStore(_ROOT / "data" / "luxefinder_settings.json")
 
@@ -118,7 +132,7 @@ async def _startup() -> None:
         state.replace_all(_seed_listings())
     else:
         state.replace_all([])
-        interval = float(os.environ.get("LUXEFINDER_SCRAPE_INTERVAL", "1.5"))
+        interval = float(os.environ.get("LUXEFINDER_SCRAPE_INTERVAL", "3"))
         print("[scraper] starting background loop")
         start_background_scraper(
             interval_sec=interval,
@@ -290,7 +304,15 @@ async def post_telegram_test(
 
 @app.get("/api/listings")
 async def get_listings() -> dict[str, object]:
-    return {"listings": state.snapshot()}
+    return {"listings": _visible_listings(state.snapshot())}
+
+
+def _is_visible_listing(row: dict[str, object]) -> bool:
+    return str(row.get("analysis_status") or "") not in ("new_listing", "market_update", "market_updating")
+
+
+def _visible_listings(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [row for row in rows if _is_visible_listing(row)]
 
 
 @app.patch("/api/listings/{listing_id}")
@@ -300,6 +322,67 @@ async def patch_listing(listing_id: str, body: ListingPatchBody) -> dict[str, ob
         raise HTTPException(status_code=404, detail="listing not found")
     await hub.publish({"type": "market_update", "id": listing_id, "listing": merged, "patch": body.patch})
     return {"ok": True, "listing": merged}
+
+
+@app.post("/api/listings/reprice")
+async def reprice_listings() -> dict[str, object]:
+    """현재 메모리 state의 매물 시세를 새 조회 로직으로 다시 계산."""
+    rows = state.snapshot()
+    if not rows:
+        return {"ok": True, "updated": 0, "listings": []}
+
+    updated: list[dict[str, object]] = []
+    processable: list[dict[str, object]] = []
+    for row in rows:
+        listing_id = str(row.get("id") or "")
+        if not listing_id:
+            continue
+        if row.get("analysis_status") == "excluded" or row.get("status") in ("excluded", "제외됨"):
+            updated.append({"id": listing_id, "status": "excluded", "skipped": True})
+            continue
+        processable.append(row)
+
+    if processable:
+        per_listing_timeout = _env_int("LUXEFINDER_REPRICE_LISTING_TIMEOUT", 60)
+        workers = max(1, min(_env_int("LUXEFINDER_REPRICE_WORKERS", 2), 3))
+
+        def _run(row: dict[str, object]) -> dict[str, object]:
+            listing_id = str(row.get("id") or "")
+            _process_market_for_listing(
+                row,
+                state=state,
+                hub=hub,
+                settings_store=settings_store,
+                public_api_base="http://127.0.0.1:8001",
+            )
+            final = next((x for x in state.snapshot() if x.get("id") == listing_id), None)
+            return {
+                "id": listing_id,
+                "finalized": bool(final and final.get("analysis_status") == "market_final"),
+                "reference_price_krw": final.get("reference_price_krw") if final else None,
+                "reference_platform": final.get("reference_platform") if final else None,
+            }
+
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="reprice-listing-")
+        futures = {pool.submit(_run, row): str(row.get("id") or "") for row in processable}
+        try:
+            total_timeout = per_listing_timeout * max(1, (len(processable) + workers - 1) // workers)
+            for fut in as_completed(futures, timeout=total_timeout):
+                listing_id = futures[fut]
+                try:
+                    updated.append(fut.result(timeout=0))
+                except Exception as exc:
+                    traceback.print_exc()
+                    updated.append({"id": listing_id, "status": "failed", "error": str(exc)})
+        except FuturesTimeoutError:
+            for fut, listing_id in futures.items():
+                if fut.done():
+                    continue
+                fut.cancel()
+                updated.append({"id": listing_id, "status": "timeout", "error": "reprice timeout"})
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+    return {"ok": True, "updated": len(updated), "listings": updated}
 
 
 @app.get("/api/test-telegram")
@@ -349,7 +432,7 @@ async def debug_run_once() -> dict[str, object]:
             hub=hub,
             settings_store=settings_store,
             public_api_base=prefix,
-            limit=2,
+            limit=_env_int("LUXEFINDER_DAANGN_PER_QUERY", 5),
         )
         return {"ok": True, "processed": True}
     except Exception as e:
@@ -362,11 +445,14 @@ async def listings_stream() -> StreamingResponse:
     async def event_gen():
         q = await hub.register()
         try:
-            snap = state.snapshot()
+            snap = _visible_listings(state.snapshot())
             yield f"data: {json.dumps({'type': 'snapshot', 'listings': snap}, ensure_ascii=False)}\n\n"
             while True:
                 try:
                     msg = await asyncio.wait_for(q.get(), timeout=120.0)
+                    listing = msg.get("listing") if isinstance(msg, dict) else None
+                    if isinstance(listing, dict) and not _is_visible_listing(listing):
+                        continue
                     yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"

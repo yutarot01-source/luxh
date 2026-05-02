@@ -47,6 +47,7 @@ export function getOfflinePreviewListings(): Listing[] {
       status: "완료",
       ai_status: { warranty: true, receipt: true, condition_grade: "A" },
       platform_prices: {
+        daangn_market_lowest_krw: 0,
         gogoose_lowest_krw: 12_400_000,
         feelway_lowest_krw: 0,
         bunjang_lowest_krw: 12_350_000,
@@ -79,6 +80,7 @@ export function getOfflinePreviewListings(): Listing[] {
       status: "완료",
       ai_status: { warranty: false, receipt: true, condition_grade: "A" },
       platform_prices: {
+        daangn_market_lowest_krw: 0,
         gogoose_lowest_krw: 1_600_000,
         feelway_lowest_krw: 1_590_000,
         bunjang_lowest_krw: 1_580_000,
@@ -316,6 +318,7 @@ function normalizePlatformPrices(raw: unknown): PlatformPrices {
     return 0;
   };
   return {
+    daangn_market_lowest_krw: num(o.daangn_market_lowest_krw),
     gogoose_lowest_krw: num(o.gogoose_lowest_krw),
     feelway_lowest_krw: num(o.feelway_lowest_krw),
     bunjang_lowest_krw: num(o.bunjang_lowest_krw),
@@ -332,6 +335,14 @@ export function mapApiRowToListing(row: unknown): Listing {
   };
   const platform_prices = normalizePlatformPrices(o.platform_prices);
   const platformLinks = normalizePlatformLinks(o.platformLinks ?? o.platform_links);
+  const platform_basis = (o.platform_basis && typeof o.platform_basis === "object" ? o.platform_basis : undefined) as Listing["platform_basis"];
+  const basisFor = (platform: "bunjang" | "feelway" | "gogoose") => platform_basis?.[platform] ?? {};
+  const numOrNull = (v: unknown): number | null => {
+    const n = Number(v ?? 0);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const strOrUndef = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+  const strOrNull = (v: unknown): string | null => strOrUndef(v) ?? null;
   const platRaw = String(o.platform ?? "").trim() as ListingSourcePlatform;
   const platform: ListingSourcePlatform = SOURCE_PLATFORMS.includes(platRaw)
     ? platRaw
@@ -355,16 +366,12 @@ export function mapApiRowToListing(row: unknown): Listing {
         ? Number(o.reference_price_krw)
         : Number(o.market_reference_price)
       : null;
-  const refResolved = resolveReferencePrice({
-    platform_prices,
-    reference_price_krw,
-  });
   const epRaw = o.expected_profit;
   const expected_profit =
     typeof epRaw === "number" && Number.isFinite(epRaw)
       ? Math.max(0, Math.floor(epRaw))
-      : refResolved != null
-        ? Math.max(0, refResolved - price)
+      : reference_price_krw != null
+        ? Math.max(0, reference_price_krw - price)
         : 0;
 
   return {
@@ -381,7 +388,7 @@ export function mapApiRowToListing(row: unknown): Listing {
     nickname: o.nickname != null ? String(o.nickname) : undefined,
     price: Number(o.daangn_price ?? o.price ?? 0),
     daangn_price: Number(o.daangn_price ?? o.price ?? 0),
-    marketPrice: Number(o.market_reference_price ?? o.marketPrice ?? o.price ?? 0),
+    marketPrice: Number(o.market_reference_price ?? o.reference_price_krw ?? 0),
     arbitrageRate: Number(o.profit_rate ?? o.arbitrageRate ?? 0),
     profit_rate: Number(o.profit_rate ?? o.arbitrageRate ?? 0),
     status_summary: String(o.status_summary ?? o.reasoning_short ?? o.statusSummary ?? "").trim() || "—",
@@ -409,19 +416,44 @@ export function mapApiRowToListing(row: unknown): Listing {
     telegram_status: String(o.telegram_status ?? (status === "finalized" ? "pending" : "pending")),
     created_at: String(o.created_at ?? o.collectedAt ?? o.collected_at ?? ""),
     updated_at: String(o.updated_at ?? ""),
-    bunjang_price: platform_prices.bunjang_lowest_krw,
-    feelway_price: platform_prices.feelway_lowest_krw,
-    gugus_price: platform_prices.gogoose_lowest_krw,
-    bunjang_url: platformLinks?.bunjang,
-    feelway_url: platformLinks?.feelway,
-    gugus_url: platformLinks?.gogoose,
+    bunjang_price: numOrNull(o.bunjang_active_price ?? basisFor("bunjang").active_price) ?? 0,
+    feelway_price: numOrNull(o.feelway_active_price ?? basisFor("feelway").active_price) ?? 0,
+    gugus_price: numOrNull(o.gogoose_active_price ?? o.gugus_active_price ?? basisFor("gogoose").active_price) ?? 0,
+    bunjang_url: strOrUndef(o.bunjang_active_url ?? basisFor("bunjang").active_url ?? platformLinks?.bunjang),
+    feelway_url: strOrUndef(o.feelway_active_url ?? basisFor("feelway").active_url ?? platformLinks?.feelway),
+    gugus_url: strOrUndef(o.gogoose_active_url ?? o.gugus_active_url ?? basisFor("gogoose").active_url ?? platformLinks?.gogoose),
+    bunjang_sold_price: numOrNull(o.bunjang_sold_price ?? basisFor("bunjang").sold_price),
+    bunjang_sold_price_text: String(o.bunjang_sold_price_text ?? basisFor("bunjang").sold_price_text ?? ""),
+    bunjang_sold_url: strOrNull(o.bunjang_sold_url ?? basisFor("bunjang").sold_url),
+    bunjang_sold_basis_url: strOrNull(o.bunjang_sold_basis_url ?? basisFor("bunjang").sold_basis_url),
+    bunjang_active_price: numOrNull(o.bunjang_active_price ?? basisFor("bunjang").active_price),
+    bunjang_active_price_text: String(o.bunjang_active_price_text ?? basisFor("bunjang").active_price_text ?? ""),
+    bunjang_active_url: strOrNull(o.bunjang_active_url ?? basisFor("bunjang").active_url),
+    feelway_sold_price: numOrNull(o.feelway_sold_price ?? basisFor("feelway").sold_price),
+    feelway_sold_price_text: String(o.feelway_sold_price_text ?? basisFor("feelway").sold_price_text ?? ""),
+    feelway_sold_url: strOrNull(o.feelway_sold_url ?? basisFor("feelway").sold_url),
+    feelway_sold_basis_url: strOrNull(o.feelway_sold_basis_url ?? basisFor("feelway").sold_basis_url),
+    feelway_active_price: numOrNull(o.feelway_active_price ?? basisFor("feelway").active_price),
+    feelway_active_price_text: String(o.feelway_active_price_text ?? basisFor("feelway").active_price_text ?? ""),
+    feelway_active_url: strOrNull(o.feelway_active_url ?? basisFor("feelway").active_url),
+    gugus_sold_price: numOrNull(o.gogoose_sold_price ?? o.gugus_sold_price ?? basisFor("gogoose").sold_price),
+    gugus_sold_price_text: String(o.gogoose_sold_price_text ?? o.gugus_sold_price_text ?? basisFor("gogoose").sold_price_text ?? ""),
+    gugus_sold_url: strOrNull(o.gogoose_sold_url ?? o.gugus_sold_url ?? basisFor("gogoose").sold_url),
+    gugus_sold_basis_url: strOrNull(o.gogoose_sold_basis_url ?? o.gugus_sold_basis_url ?? basisFor("gogoose").sold_basis_url),
+    gugus_active_price: numOrNull(o.gogoose_active_price ?? o.gugus_active_price ?? basisFor("gogoose").active_price),
+    gugus_active_price_text: String(o.gogoose_active_price_text ?? o.gugus_active_price_text ?? basisFor("gogoose").active_price_text ?? ""),
+    gugus_active_url: strOrNull(o.gogoose_active_url ?? o.gugus_active_url ?? basisFor("gogoose").active_url),
     market_reference_price: Number(o.market_reference_price ?? reference_price_krw ?? 0) || null,
     market_reference_source: String(o.market_reference_source ?? o.market_reference_basis ?? o.reference_platform ?? ""),
     market_reference_basis: String(o.market_reference_basis ?? ""),
+    best_resale_price: Number(o.best_resale_price ?? 0) || null,
+    best_resale_platform: o.best_resale_platform != null ? String(o.best_resale_platform) : null,
+    max_expected_profit: Number(o.max_expected_profit ?? 0),
+    max_profit_rate: Number(o.max_profit_rate ?? 0),
     condition_grade: String(o.condition_grade ?? ai.condition_grade),
     has_authenticity_proof: Boolean(o.has_authenticity_proof ?? ai.warranty ?? ai.receipt),
     reasoning_short: String(o.reasoning_short ?? o.status_summary ?? ""),
-    platform_basis: (o.platform_basis && typeof o.platform_basis === "object" ? o.platform_basis : undefined) as Listing["platform_basis"],
+    platform_basis,
     ai_status: ai,
     platform_prices,
     reference_platform: (o.reference_platform as Listing["reference_platform"]) ?? null,
@@ -508,6 +540,7 @@ export function listingFromNewListingSse(p: NewListingSse): Listing {
     status: "완료",
     ai_status: { warranty: false, receipt: false, condition_grade: "A" },
     platform_prices: {
+      daangn_market_lowest_krw: 0,
       gogoose_lowest_krw: 0,
       feelway_lowest_krw: 0,
       bunjang_lowest_krw: 0,

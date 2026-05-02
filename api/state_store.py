@@ -38,7 +38,7 @@ def _normalize_nested_platform_keys(row: dict[str, Any]) -> dict[str, Any]:
 class ListingState:
     """``max_items`` 는 ``replace_all`` / ``prepend`` 시 적용되는 상한."""
 
-    def __init__(self, max_items: int = 80) -> None:
+    def __init__(self, max_items: int = 5000) -> None:
         self._items: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._max = max_items

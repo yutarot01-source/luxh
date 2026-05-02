@@ -102,6 +102,18 @@ def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
+def _normalize_trade_state(value: object) -> str | None:
+    text = _clean_text(str(value or ""))
+    lower = text.lower()
+    if lower in ("closed", "sold", "sold_out", "sold out") or "판매완료" in text or "거래완료" in text:
+        return "거래완료"
+    if lower in ("ongoing", "selling", "sale", "on_sale") or "판매중" in text:
+        return "판매중"
+    if text:
+        return text
+    return None
+
+
 def _norm_text(text: str) -> str:
     return _clean_text(text).lower()
 
@@ -355,11 +367,6 @@ class DaangnSpider(BaseCollector):
         last_rows: list[RawListing] = []
         for url in self.search_urls(query, only_on_sale=only_on_sale):
             rows: list[RawListing] = []
-            if self.stealth:
-                print("[daangn] fetcher=Playwright")
-                rows = self._search_with_playwright_fallback(url, limit=limit)
-                if rows:
-                    return rows
             try:
                 original_stealth = self.stealth
                 if original_stealth:
@@ -379,7 +386,10 @@ class DaangnSpider(BaseCollector):
             finally:
                 if "original_stealth" in locals():
                     self.stealth = original_stealth
-            if not rows:
+            if rows:
+                return rows
+            if self.stealth:
+                print("[daangn] fetcher=Playwright")
                 rows = self._search_with_playwright_fallback(url, limit=limit)
             if rows:
                 return rows
@@ -627,7 +637,7 @@ class DaangnSpider(BaseCollector):
             for k in ("status", "badge", "saleStatus", "tradeStatus"):
                 v = row.get(k)
                 if isinstance(v, str):
-                    trade = v
+                    trade = _normalize_trade_state(v)
                     break
             # 브랜드 매칭/모델명 추정은 "매물 자체 텍스트"에서만 해야 한다.
             # page_desc(검색 페이지 전체 HTML 요약/URL 포함)를 섞으면 q=브랜드 키워드 때문에 오탐이 난다.

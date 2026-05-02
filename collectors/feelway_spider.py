@@ -50,13 +50,18 @@ class FeelwaySpider(BaseCollector):
         self._use_auto_wait = use_auto_wait
 
     @staticmethod
-    def search_url(query: str) -> str:
+    def search_url(query: str, *, page: int = 1) -> str:
         from urllib.parse import quote_plus
 
-        return f"https://www.feelway.com/search?q={quote_plus(query)}"
+        page = max(1, int(page))
+        suffix = f"&page={page}" if page > 1 else ""
+        return f"https://www.feelway.com/search?q={quote_plus(query)}{suffix}"
 
     def search(self, query: str, *, limit: int = 30) -> list[RawListing]:
-        url = self.search_url(query)
+        return self.search_page(query, page=1, limit=limit)
+
+    def search_page(self, query: str, *, page: int = 1, limit: int = 30) -> list[RawListing]:
+        url = self.search_url(query, page=page)
         if self.stealth and self._use_auto_wait:
             aw = feelway_auto_wait_fetch_kwargs(
                 scroll_rounds=self._scroll_rounds,
@@ -154,6 +159,31 @@ def _trade_from_text(blob: str) -> str | None:
     return None
 
 
+def _trade_from_item(item: dict) -> str | None:
+    status_blob = " ".join(
+        str(item.get(k) or "")
+        for k in (
+            "status",
+            "trade_state",
+            "state",
+            "sale_state",
+            "sale_status",
+            "goods_status",
+            "sold_out",
+            "is_sold",
+        )
+    )
+    trade = _trade_from_text(status_blob)
+    if trade:
+        return trade
+    lowered = status_blob.lower()
+    if any(k in lowered for k in ("sold", "soldout", "sold_out", "closed")):
+        return "거래완료"
+    if any(k in lowered for k in ("selling", "active", "open", "available")):
+        return "판매중"
+    return "판매중"
+
+
 def _best_price_from_snippet(html: str) -> int | None:
     candidates: list[int] = []
     for m in _PRICE_CAND.finditer(html):
@@ -200,16 +230,17 @@ def _parse_data_props_rows(resp: Response, limit: int) -> list[RawListing]:
             photo = "https://cdn.feelway.com/" + photo.lstrip("/")
         brand = str(item.get("brand_name") or "").strip() or "item"
         listing_url = f"https://www.feelway.com/view_goods.php?g_no={g_no}"
+        trade_state = _trade_from_item(item)
         rows.append(
             RawListing(
                 source="feelway",
                 model_name=title[:400],
                 price_krw=price_krw,
-                status_text=str(item.get("brand_name") or "")[:1000],
+                status_text=f"{trade_state or ''} {item.get('brand_name') or ''}".strip()[:1000],
                 listing_url=listing_url,
                 image_url=photo,
                 description_text=json.dumps(item, ensure_ascii=False)[:4000],
-                trade_state="판매중",
+                trade_state=trade_state,
                 price_text=price_text,
                 source_title=title[:400],
                 fetched_at=utc_now_iso(),

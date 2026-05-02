@@ -18,17 +18,18 @@ export type AnalysisStatus =
  * **0** 은 아직 시세가 없음( UI에서 '확인 중'), **양수**는 해당 플랫폼 최저가.
  */
 export interface PlatformPrices {
+  daangn_market_lowest_krw: number;
   gogoose_lowest_krw: number;
   feelway_lowest_krw: number;
   bunjang_lowest_krw: number;
 }
 
-export type PlatformId = "gogoose" | "feelway" | "bunjang";
+export type PlatformId = "daangn" | "gogoose" | "feelway" | "bunjang";
 
 /** API ``platform`` — 본문 매물이 올라온 출처(현재 파이프라인은 당근 기준 ``daangn``). */
 export type ListingSourcePlatform = "daangn" | "bunjang" | "feelway" | "gugus";
 
-/** 시세 비교에 쓰인 타 플랫폼 상세 페이지 URL (있을 때만). */
+/** 시세 비교 플랫폼의 현재 판매중 매물 URL(active_url)만 담는다. */
 export type PlatformDetailLinks = Partial<Record<PlatformId, string>>;
 
 /** FastAPI `ai_status` — AI 판별 요약 */
@@ -86,14 +87,59 @@ export interface Listing {
   bunjang_url?: string;
   feelway_url?: string;
   gugus_url?: string;
+  bunjang_sold_price?: number | null;
+  bunjang_sold_price_text?: string;
+  bunjang_sold_url?: string | null;
+  bunjang_sold_basis_url?: string | null;
+  bunjang_active_price?: number | null;
+  bunjang_active_price_text?: string;
+  bunjang_active_url?: string | null;
+  feelway_sold_price?: number | null;
+  feelway_sold_price_text?: string;
+  feelway_sold_url?: string | null;
+  feelway_sold_basis_url?: string | null;
+  feelway_active_price?: number | null;
+  feelway_active_price_text?: string;
+  feelway_active_url?: string | null;
+  gugus_sold_price?: number | null;
+  gugus_sold_price_text?: string;
+  gugus_sold_url?: string | null;
+  gugus_sold_basis_url?: string | null;
+  gugus_active_price?: number | null;
+  gugus_active_price_text?: string;
+  gugus_active_url?: string | null;
   market_reference_price?: number | null;
   market_reference_source?: string | null;
   market_reference_basis?: string | null;
   profit_rate?: number;
+  best_resale_price?: number | null;
+  best_resale_platform?: string | null;
+  max_expected_profit?: number;
+  max_profit_rate?: number;
   condition_grade?: Grade | string;
   has_authenticity_proof?: boolean;
   reasoning_short?: string;
-  platform_basis?: Record<string, { basis?: string; sold_count?: number; sample_count?: number; status?: string; error?: string }>;
+  platform_basis?: Record<
+    string,
+    {
+      basis?: string;
+      basis_type?: "sold" | "active_fallback" | string;
+      sold_count?: number;
+      sample_count?: number;
+      status?: string;
+      error?: string;
+      price?: number | null;
+      price_text?: string;
+      url?: string | null;
+      sold_price?: number | null;
+      sold_price_text?: string;
+      sold_url?: string | null;
+      sold_basis_url?: string | null;
+      active_price?: number | null;
+      active_price_text?: string;
+      active_url?: string | null;
+    }
+  >;
 
   /** FastAPI `ai_status` */
   ai_status: AiStatus;

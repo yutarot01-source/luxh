@@ -46,6 +46,7 @@ PLATFORM_BUTTON: dict[str, str] = {
 }
 
 PLATFORM_PRICE_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("daangn", "당근마켓", "daangn_market_lowest_krw"),
     ("bunjang", "번개장터", "bunjang_lowest_krw"),
     ("feelway", "필웨이", "feelway_lowest_krw"),
     ("gogoose", "구구스", "gogoose_lowest_krw"),
@@ -247,11 +248,11 @@ def format_listing_alert(row: dict[str, Any]) -> str:
             basis = ""
             pb = row.get("platform_basis") or {}
             if isinstance(pb, dict) and isinstance(pb.get(pid), dict):
-                b = str(pb[pid].get("basis") or "")
-                if b == "sold_median":
+                b = str(pb[pid].get("basis_type") or pb[pid].get("basis") or "")
+                if b == "sold" or b.startswith("sold"):
                     basis = " (거래완료)"
-                elif b in ("active_realistic_median", "active_lower20_avg"):
-                    basis = " (현실가)"
+                elif b == "active_fallback" or b.startswith("active"):
+                    basis = " (판매중 참고가)"
             platform_lines.append(f"- {label}: {price_line}{basis}")
 
     plat = str(row.get("platform") or "daangn").lower()

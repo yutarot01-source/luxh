@@ -4,6 +4,7 @@ export const PLATFORM_ORDER: PlatformId[] = ["gogoose", "feelway", "bunjang"];
 
 /** 시세 카드 플랫폼 로고용 (favicon 서비스 도메인). */
 export const PLATFORM_FAVICON_DOMAIN: Record<PlatformId, string> = {
+  daangn: "www.daangn.com",
   gogoose: "www.gugus.co.kr",
   feelway: "www.feelway.com",
   bunjang: "m.bunjang.co.kr",
@@ -23,12 +24,14 @@ export function faviconServiceUrl(domain: string): string {
 }
 
 export const PLATFORM_LABEL_KO: Record<PlatformId, string> = {
+  daangn: "당근마켓",
   gogoose: "구구스",
   feelway: "필웨이",
   bunjang: "번개장터",
 };
 
 export const PLATFORM_PRICE_KEY: Record<PlatformId, keyof PlatformPrices> = {
+  daangn: "daangn_market_lowest_krw",
   gogoose: "gogoose_lowest_krw",
   feelway: "feelway_lowest_krw",
   bunjang: "bunjang_lowest_krw",

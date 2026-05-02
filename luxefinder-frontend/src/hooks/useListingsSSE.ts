@@ -5,7 +5,7 @@ import type { Listing } from "@/lib/luxe/types";
 export type SseState = "connecting" | "live" | "reconnecting" | "disconnected" | "error";
 
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") ?? "";
-const MAX_LISTINGS = 100;
+const MAX_LISTINGS = 1000;
 
 function streamUrl(path: string): string {
   return `${API_BASE}${path}`;
@@ -41,6 +41,10 @@ function normalizeEventListing(msg: Record<string, unknown>): Listing | null {
   return null;
 }
 
+function isFinalVisible(listing: Listing): boolean {
+  return listing.status !== "market_updating" && listing.status !== "analyzing";
+}
+
 export function useListingsSSE() {
   const [listings, setListings] = useState<Listing[]>([]);
   const [state, setState] = useState<SseState>("connecting");
@@ -55,7 +59,7 @@ export function useListingsSSE() {
     void fetchListings()
       .then((rows) => {
         if (!closed && !hasSnapshot.current) {
-          setListings(rows.slice(0, MAX_LISTINGS));
+          setListings(rows.filter(isFinalVisible).slice(0, MAX_LISTINGS));
           hasSnapshot.current = rows.length > 0;
         }
       })
@@ -79,21 +83,19 @@ export function useListingsSSE() {
           const msg = JSON.parse(event.data) as Record<string, unknown>;
           const type = String(msg.type ?? "");
           if (type === "snapshot" && Array.isArray(msg.listings)) {
-            if (!hasSnapshot.current && listings.length === 0) {
-              setListings(msg.listings.map(mapApiRowToListing).slice(0, MAX_LISTINGS));
-              hasSnapshot.current = true;
-            }
+            setListings(msg.listings.map(mapApiRowToListing).filter(isFinalVisible).slice(0, MAX_LISTINGS));
+            hasSnapshot.current = true;
             return;
           }
           if (type === "new_listing") {
             const listing = normalizeEventListing(msg);
-            if (listing) setListings((prev) => upsertById(prev, listing, true));
+            if (listing && isFinalVisible(listing)) setListings((prev) => upsertById(prev, listing, true));
             return;
           }
           if (type === "market_update") {
             const id = String(msg.id ?? "");
             const listing = normalizeEventListing(msg);
-            if (listing) setListings((prev) => upsertById(prev, listing));
+            if (listing && isFinalVisible(listing)) setListings((prev) => upsertById(prev, listing));
             else if (id) setListings((prev) => patchById(prev, id, mapApiRowToListing(msg) as Partial<Listing>));
             return;
           }
@@ -127,14 +129,15 @@ export function useListingsSSE() {
   }, []);
 
   const summary = useMemo(() => {
-    const finalized = listings.filter((item) => item.status === "finalized" || item.status === "완료");
+    const visible = listings.filter((item) => item.status !== "excluded" && item.status !== "제외됨");
+    const finalized = visible.filter((item) => item.status === "finalized" || item.status === "완료");
     const profits = finalized.map((item) => item.expected_profit || 0);
     return {
-      total: listings.length,
+      total: visible.length,
       finalized: finalized.length,
       averageProfit: profits.length ? Math.round(profits.reduce((a, b) => a + b, 0) / profits.length) : 0,
       maxProfit: profits.length ? Math.max(...profits) : 0,
-      today: listings.filter((item) => {
+      today: visible.filter((item) => {
         const raw = item.created_at || item.collectedAt;
         if (!raw) return false;
         return new Date(raw).toDateString() === new Date().toDateString();
